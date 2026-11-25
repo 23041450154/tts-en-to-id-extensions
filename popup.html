@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YT IndoSub + TTS</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-badge">ID</div>
+        <div>
+          <h1>YT IndoSub + TTS</h1>
+          <p class="subtitle">Subtitle &amp; Dubbing YouTube</p>
+        </div>
+      </div>
+      <span id="statusDot" class="status-dot idle" title="Status"></span>
+    </header>
+
+    <div id="statusBar" class="status-bar">
+      <span id="statusText">Memeriksa tab YouTube...</span>
+      <span id="autoSpeedBadge" class="speed-badge hidden">Auto 1.10x</span>
+    </div>
+
+    <section class="card">
+      <div class="row">
+        <div>
+          <div class="label">Subtitle Indonesia</div>
+          <div class="hint">Terjemahkan otomatis di video</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enabled" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Dual Subtitle (EN + ID)</div>
+          <div class="hint">Tampilkan teks Inggris asli di atasnya</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="showOriginal" />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Text-to-Speech (Dubbing ID)</div>
+          <div class="hint">Bacakan terjemahan dengan suara Indonesia</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="ttsEnabled" />
+          <span class="slider tts"></span>
+        </label>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Auto Deteksi Kecepatan TTS</div>
+          <div class="hint">Otomatis percepat saat pembicara bicara cepat</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="autoTtsSpeed" />
+          <span class="slider auto"></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="field">
+        <label class="label" for="ttsEngine">Mesin Suara TTS</label>
+        <select id="ttsEngine" class="select">
+          <option value="google">Google TTS (Natural — Rekomendasi)</option>
+          <option value="browser">Browser TTS (Web Speech API)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span id="ttsRateLabel" class="label">Kecepatan Dasar (Auto)</span>
+          <span id="ttsRateVal" class="value">1.10x</span>
+        </div>
+        <input type="range" id="ttsRate" min="0.8" max="1.8" step="0.05" />
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span class="label">Volume Suara TTS</span>
+          <span id="ttsVolumeVal" class="value">100%</span>
+        </div>
+        <input type="range" id="ttsVolume" min="0.1" max="1.0" step="0.05" />
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span class="label">Volume Video Asli saat Dubbing</span>
+          <span id="duckVolumeVal" class="value">15%</span>
+        </div>
+        <input type="range" id="duckVolume" min="0.0" max="1.0" step="0.05" />
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <span class="label">Ukuran Font Subtitle</span>
+          <span id="fontSizeVal" class="value">22px</span>
+        </div>
+        <input type="range" id="fontSize" min="14" max="36" step="1" />
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="button" id="btnTestTts" class="btn btn-secondary">Tes Suara</button>
+      <button type="button" id="btnReload" class="btn btn-primary">Muat Ulang Sub</button>
+    </div>
+
+    <footer class="footer">
+      Klik tombol <strong>ID</strong> atau <strong>TTS</strong> langsung di bar player YouTube untuk toggle cepat.
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

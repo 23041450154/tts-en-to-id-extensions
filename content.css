@@ -1,0 +1,134 @@
+/* YT IndoSub + TTS Overlay & Player Controls */
+
+#movie_player.yt-indosub-hide-native .ytp-caption-window-container {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+#yt-indosub-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 65;
+  max-width: 84%;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  transition: bottom 0.18s ease, opacity 0.15s ease;
+  font-family: "YouTube Noto", Roboto, Arial, Helvetica, sans-serif;
+}
+
+#movie_player.ytp-autohide #yt-indosub-overlay {
+  bottom: 24px;
+}
+
+#yt-indosub-overlay.yt-indosub-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.yt-indosub-line {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: rgba(12, 14, 18, 0.82);
+  backdrop-filter: blur(4px);
+  line-height: 1.35;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.yt-indosub-line-en {
+  color: rgba(226, 232, 240, 0.88);
+  font-weight: 400;
+  font-size: 0.72em;
+}
+
+.yt-indosub-line-id {
+  color: #ffffff;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.yt-indosub-line-id.yt-indosub-speaking {
+  color: #fef08a;
+}
+
+#yt-indosub-toast {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 70;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(15, 18, 24, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #f8fafc;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+#yt-indosub-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Native YouTube player bar quick buttons */
+.yt-indosub-player-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 40px !important;
+  height: 100% !important;
+  padding: 0 !important;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  vertical-align: top;
+  position: relative;
+}
+
+.yt-indosub-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  min-width: 28px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.yt-indosub-player-btn:hover .yt-indosub-pill {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.yt-indosub-player-btn.active-sub .yt-indosub-pill {
+  background: #e11d2e;
+  color: #ffffff;
+  border-color: #fb7185;
+}
+
+.yt-indosub-player-btn.active-tts .yt-indosub-pill {
+  background: #10b981;
+  color: #052e16;
+  border-color: #6ee7b7;
+}
