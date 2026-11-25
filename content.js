@@ -59,18 +59,72 @@
   // Settings & Persistence
   // =========================
 
+  function isContextValid() {
+    try {
+      return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function safeSendMessage(payload) {
+    return new Promise((resolve) => {
+      if (!isContextValid()) {
+        if (typeof cleanupInvalidatedContext === 'function') cleanupInvalidatedContext();
+        resolve(null);
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(payload, (resp) => {
+          const errMsg = chrome.runtime.lastError?.message || '';
+          if (errMsg.includes('context invalidated')) {
+            if (typeof cleanupInvalidatedContext === 'function') cleanupInvalidatedContext();
+            resolve(null);
+            return;
+          }
+          if (chrome.runtime.lastError || !resp) {
+            resolve(null);
+            return;
+          }
+          resolve(resp);
+        });
+      } catch {
+        if (typeof cleanupInvalidatedContext === 'function') cleanupInvalidatedContext();
+        resolve(null);
+      }
+    });
+  }
+
   function loadSettings() {
     return new Promise((resolve) => {
-      chrome.storage.sync.get(DEFAULT_SETTINGS, (stored) => {
-        settings = { ...DEFAULT_SETTINGS, ...(stored || {}) };
+      if (!isContextValid()) {
         resolve(settings);
-      });
+        return;
+      }
+      try {
+        chrome.storage.sync.get(DEFAULT_SETTINGS, (stored) => {
+          if (chrome.runtime.lastError) {
+            resolve(settings);
+            return;
+          }
+          settings = { ...DEFAULT_SETTINGS, ...(stored || {}) };
+          resolve(settings);
+        });
+      } catch {
+        resolve(settings);
+      }
     });
   }
 
   function saveSettingsPatch(patch) {
     settings = { ...settings, ...patch };
-    chrome.storage.sync.set(patch);
+    if (isContextValid()) {
+      try {
+        chrome.storage.sync.set(patch);
+      } catch {
+        if (typeof cleanupInvalidatedContext === 'function') cleanupInvalidatedContext();
+      }
+    }
     applySettingsUI();
   }
 
@@ -483,16 +537,9 @@
     return true;
   }
 
-  function fetchSubtitleUrlBg(url) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'FETCH_SUBTITLE_URL', url }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok || !resp.body) {
-          resolve('');
-          return;
-        }
-        resolve(resp.body);
-      });
-    });
+  async function fetchSubtitleUrlBg(url) {
+    const resp = await safeSendMessage({ type: 'FETCH_SUBTITLE_URL', url });
+    return resp && resp.ok && resp.body ? resp.body : '';
   }
 
   async function tryExtractGenericVideoTracks(video, token) {
@@ -563,24 +610,14 @@
   // Translation Pipeline
   // =========================
 
-  function translateBatchBg(texts, sourceLang) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        {
-          type: 'TRANSLATE_BATCH',
-          texts,
-          sourceLang: sourceLang || 'en',
-          targetLang: 'id'
-        },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve(null);
-            return;
-          }
-          resolve(resp.translations || null);
-        }
-      );
+  async function translateBatchBg(texts, sourceLang) {
+    const resp = await safeSendMessage({
+      type: 'TRANSLATE_BATCH',
+      texts,
+      sourceLang: sourceLang || 'en',
+      targetLang: 'id'
     });
+    return resp && resp.ok ? resp.translations || null : null;
   }
 
   async function translateRange(startIdx, count, token) {
@@ -1062,23 +1099,23 @@
         return Promise.race([shared, new Promise((resolve) => setTimeout(() => resolve([]), 2200))]);
       }
 
-      const promise = new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { type: 'FETCH_TTS_AUDIO', text: clean, voice, lang: 'id', isPrefetch },
-          (resp) => {
-            this.inflightFetches.delete(cacheKey);
-            if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls) || resp.audioUrls.length === 0) {
-              resolve([]);
-              return;
-            }
-            if (this.prefetchCache.size > 120) {
-              const oldest = this.prefetchCache.keys().next().value;
-              this.prefetchCache.delete(oldest);
-            }
-            this.prefetchCache.set(cacheKey, resp.audioUrls);
-            resolve(resp.audioUrls);
-          }
-        );
+      const promise = safeSendMessage({
+        type: 'FETCH_TTS_AUDIO',
+        text: clean,
+        voice,
+        lang: 'id',
+        isPrefetch
+      }).then((resp) => {
+        this.inflightFetches.delete(cacheKey);
+        if (!resp || !resp.ok || !Array.isArray(resp.audioUrls) || resp.audioUrls.length === 0) {
+          return [];
+        }
+        if (this.prefetchCache.size > 120) {
+          const oldest = this.prefetchCache.keys().next().value;
+          this.prefetchCache.delete(oldest);
+        }
+        this.prefetchCache.set(cacheKey, resp.audioUrls);
+        return resp.audioUrls;
       });
 
       this.inflightFetches.set(cacheKey, promise);
@@ -1146,18 +1183,14 @@
       if (videoEl && videoEl.paused) return;
 
       if (!audioUrls || audioUrls.length === 0) {
-        audioUrls = await new Promise((resolve) => {
-          chrome.runtime.sendMessage(
-            { type: 'FETCH_TTS_AUDIO', text: clean, voice: 'google:id', lang: 'id', isPrefetch: false },
-            (resp) => {
-              if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls)) {
-                resolve([]);
-              } else {
-                resolve(resp.audioUrls);
-              }
-            }
-          );
+        const fallbackResp = await safeSendMessage({
+          type: 'FETCH_TTS_AUDIO',
+          text: clean,
+          voice: 'google:id',
+          lang: 'id',
+          isPrefetch: false
         });
+        audioUrls = fallbackResp && fallbackResp.ok && Array.isArray(fallbackResp.audioUrls) ? fallbackResp.audioUrls : [];
         if (token !== this.playToken || settings.masterEnabled === false || !settings.ttsEnabled) return;
         if (videoEl && videoEl.paused) return;
       }
@@ -1873,7 +1906,7 @@
 
   function checkPageState() {
     // If user reloaded the extension without refreshing this tab, clean up stale UI cleanly
-    if (!chrome.runtime || !chrome.runtime.id) {
+    if (!isContextValid()) {
       cleanupInvalidatedContext();
       return;
     }
