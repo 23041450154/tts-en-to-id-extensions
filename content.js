@@ -292,7 +292,12 @@
         i++;
       }
 
-      const cleaned = cleanCaptionText(textLines.join(' '));
+      const rawJoined = textLines.join(' ');
+      // Skip thumbnail sprite cues (e.g. thumb-sprite.jpg#xywh=0,0,160,90) or bare image URLs
+      if (/#xywh=/i.test(rawJoined) || /\.(?:jpg|jpeg|png|webp|gif)(?:#|\?|\s|$)/i.test(rawJoined)) {
+        continue;
+      }
+      const cleaned = cleanCaptionText(rawJoined);
       if (cleaned && Number.isFinite(start) && Number.isFinite(end)) {
         cues.push({ start, end: Math.max(start + 0.4, end), en: cleaned });
       }
@@ -517,7 +522,9 @@
           const raw = [];
           for (let i = 0; i < cueList.length; i++) {
             const c = cueList[i];
-            const cleaned = cleanCaptionText(c.text || '');
+            const rawText = c.text || '';
+            if (/#xywh=/i.test(rawText) || /\.(?:jpg|jpeg|png|webp|gif)(?:#|\?|\s|$)/i.test(rawText)) continue;
+            const cleaned = cleanCaptionText(rawText);
             if (!cleaned) continue;
             raw.push({
               start: Number(c.startTime) || 0,

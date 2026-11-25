@@ -58,6 +58,10 @@
 
       if (!isYouTubeHost) {
         const lower = (u.pathname + u.search).toLowerCase();
+        // Never capture video seekbar thumbnail/storyboard sprite VTTs
+        if (/(?:thumb|sprite|storyboard|trickplay|chapters?|preview[-_]?img)/i.test(lower)) {
+          return null;
+        }
         const looksLikeSub =
           /\.(vtt|srt|ttml|dfxp)(\?|$|&)/i.test(lower) ||
           /(\/vtt\/|\/subtitles?\/|\/captions?\/|timedtext|webvtt|vtt-c\.udemycdn\.com)/i.test(u.href);
@@ -82,6 +86,11 @@
   function looksLikeSubtitleBody(body) {
     const trimmed = (body || '').trim();
     if (trimmed.length < 18) return false;
+    // Reject thumbnail/storyboard sprite VTTs (e.g. thumb-sprite.jpg#xywh=0,0,160,90)
+    const sample = trimmed.slice(0, 1500);
+    if (/#xywh=/i.test(sample) || /\.(?:jpg|jpeg|png|webp|gif)(?:#|\?|\s|$)/i.test(sample)) {
+      return false;
+    }
     if (/^WEBVTT\b/i.test(trimmed)) return true;
     if (/\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}/.test(trimmed)) return true;
     if (trimmed.startsWith('{') && trimmed.includes('"events"')) return true;
