@@ -35,6 +35,7 @@ const els = {
 
 let currentSettings = { ...DEFAULT_SETTINGS };
 let testAudio = null;
+let statusHoldUntil = 0;
 
 function populateBrowserVoices() {
   if (!('speechSynthesis' in window) || !els.browserVoicesGroup) return;
@@ -115,6 +116,7 @@ function queryActiveYouTubeTab(callback) {
 }
 
 function refreshTabStatus() {
+  if (Date.now() < statusHoldUntil) return;
   queryActiveYouTubeTab((tab) => {
     if (!tab) {
       setStatusUI('idle', 'Buka video di youtube.com untuk mulai');
@@ -143,7 +145,7 @@ function refreshTabStatus() {
 async function runVoiceTest() {
   const sample = 'Halo! Ini adalah tes suara dubbing bahasa Indonesia otomatis untuk YouTube.';
   const voice = currentSettings.ttsVoice || 'google:id';
-  els.btnTestTts.textContent = 'Memutar...';
+  els.btnTestTts.textContent = 'Memuat...';
   els.btnTestTts.disabled = true;
 
   const restoreBtn = () => {
@@ -151,8 +153,16 @@ async function runVoiceTest() {
     els.btnTestTts.disabled = false;
   };
 
+  const showTempError = (msg) => {
+    statusHoldUntil = Date.now() + 4500;
+    setStatusUI('error', msg);
+    restoreBtn();
+  };
+
   if (testAudio) {
     try {
+      testAudio.onended = null;
+      testAudio.onerror = null;
       testAudio.pause();
     } catch {
       // ignore
@@ -162,8 +172,7 @@ async function runVoiceTest() {
 
   if (voice.startsWith('browser:')) {
     if (!('speechSynthesis' in window)) {
-      setStatusUI('error', 'Browser TTS tidak tersedia');
-      restoreBtn();
+      showTempError('Browser TTS tidak tersedia');
       return;
     }
     window.speechSynthesis.cancel();
@@ -182,24 +191,29 @@ async function runVoiceTest() {
       voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('id'));
     if (picked) utter.voice = picked;
 
-    utter.onend = utter.onerror = restoreBtn;
+    els.btnTestTts.textContent = 'Memutar...';
+    utter.onend = restoreBtn;
+    utter.onerror = () => showTempError('Browser TTS gagal memutar suara');
     window.speechSynthesis.speak(utter);
     return;
   }
 
-  chrome.runtime.sendMessage({ type: 'FETCH_TTS_AUDIO', text: sample, voice, lang: 'id' }, (resp) => {
-    if (chrome.runtime.lastError || !resp || !resp.ok || !resp.audioUrls || resp.audioUrls.length === 0) {
-      setStatusUI('error', 'Gagal memuat suara TTS');
-      restoreBtn();
+  chrome.runtime.sendMessage({ type: 'FETCH_TTS_AUDIO', text: sample, voice, lang: 'id', isTest: true }, (resp) => {
+    const runtimeErr = chrome.runtime.lastError?.message;
+    if (runtimeErr || !resp || !resp.ok || !resp.audioUrls || resp.audioUrls.length === 0) {
+      const detail = runtimeErr || resp?.error || 'Koneksi ke server TTS gagal';
+      showTempError(`Gagal memuat suara (${detail})`);
       return;
     }
 
+    els.btnTestTts.textContent = 'Memutar...';
     testAudio = new Audio(resp.audioUrls[0]);
     testAudio.preservesPitch = true;
     testAudio.volume = Math.max(0.1, Math.min(1, Number(currentSettings.ttsVolume) || 1));
     testAudio.playbackRate = Math.max(0.8, Math.min(1.8, Number(currentSettings.ttsRate) || 1.1));
-    testAudio.onended = testAudio.onerror = restoreBtn;
-    testAudio.play().catch(restoreBtn);
+    testAudio.onended = restoreBtn;
+    testAudio.onerror = () => showTempError('Audio gagal didekode browser');
+    testAudio.play().catch((err) => showTempError(`Gagal putar audio: ${err?.message || 'blocked'}`));
   });
 }
 

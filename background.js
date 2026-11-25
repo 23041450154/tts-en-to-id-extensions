@@ -225,11 +225,23 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+async function fetchGoogleTTSFromEndpoint(url, timeoutMs = 6000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, { credentials: 'omit', signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Google TTS HTTP ${res.status}`);
+    }
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('text/html')) {
+      throw new Error('Google TTS diblokir sementara (HTML)');
+    }
+    const buffer = await res.arrayBuffer();
+    if (!buffer || buffer.byteLength < 100) {
+      throw new Error('Google TTS returned empty audio');
+    }
+    return `data:audio/mpeg;base64,${arrayBufferToBase64(buffer)}`;
   } finally {
     clearTimeout(timer);
   }
@@ -241,81 +253,79 @@ async function fetchGoogleTTSChunk(chunk, lang = 'id') {
     return ttsCache.get(cacheKey);
   }
 
-  const params = new URLSearchParams({
-    ie: 'UTF-8',
-    tl: lang,
-    client: 'tw-ob',
-    q: chunk
-  });
+  const p1 = new URLSearchParams({ ie: 'UTF-8', tl: lang, client: 'tw-ob', q: chunk });
+  const p2 = new URLSearchParams({ ie: 'UTF-8', tl: lang, client: 'gtx', q: chunk });
+  const urls = [
+    `https://translate.google.com/translate_tts?${p1.toString()}`,
+    `https://translate.googleapis.com/translate_tts?${p2.toString()}`
+  ];
 
-  const res = await fetchWithTimeout(
-    `https://translate.google.com/translate_tts?${params.toString()}`,
-    {},
-    4500
-  );
-  if (!res.ok) {
-    throw new Error(`Google TTS HTTP ${res.status}`);
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const dataUrl = await fetchGoogleTTSFromEndpoint(url, 6000);
+      setBounded(ttsCache, cacheKey, dataUrl, TTS_CACHE_LIMIT);
+      return dataUrl;
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  const buffer = await res.arrayBuffer();
-  if (!buffer || buffer.byteLength < 100) {
-    throw new Error('Google TTS returned empty audio');
-  }
-
-  const dataUrl = `data:audio/mpeg;base64,${arrayBufferToBase64(buffer)}`;
-  setBounded(ttsCache, cacheKey, dataUrl, TTS_CACHE_LIMIT);
-  return dataUrl;
+  throw lastErr || new Error('Google TTS gagal');
 }
 
-async function fetchTikTokTTSChunk(chunk, voiceId, timeoutMs = 6500) {
+async function fetchTikTokTTSChunk(chunk, voiceId, timeoutMs = 7000) {
   const cacheKey = `tiktok:${voiceId}:${chunk}`;
   if (ttsCache.has(cacheKey)) {
     return ttsCache.get(cacheKey);
   }
 
-  const res = await fetchWithTimeout(
-    'https://ottsy.weilbyte.dev/api/generation',
-    {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch('https://ottsy.weilbyte.dev/api/generation', {
       method: 'POST',
+      credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: chunk, voice: voiceId })
-    },
-    timeoutMs
-  );
-  if (!res.ok) {
-    throw new Error(`TikTok TTS HTTP ${res.status}`);
-  }
-  const json = await res.json();
-  if (!json || !json.success || !json.data) {
-    throw new Error(json?.error || 'TikTok TTS empty response');
-  }
+      body: JSON.stringify({ text: chunk, voice: voiceId }),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      throw new Error(`TikTok TTS HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    if (!json || !json.success || !json.data) {
+      throw new Error(json?.error || 'TikTok TTS empty response');
+    }
 
-  const dataUrl = `data:audio/mpeg;base64,${json.data}`;
-  setBounded(ttsCache, cacheKey, dataUrl, TTS_CACHE_LIMIT);
-  return dataUrl;
+    const dataUrl = `data:audio/mpeg;base64,${json.data}`;
+    setBounded(ttsCache, cacheKey, dataUrl, TTS_CACHE_LIMIT);
+    return dataUrl;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function fetchSingleTTSChunk(chunk, voice = 'google:id', lang = 'id', isPrefetch = false) {
+async function fetchSingleTTSChunk(chunk, voice = 'google:id', lang = 'id', options = {}) {
+  const { isPrefetch = false, isTest = false } = options;
   if (voice && voice.startsWith('tiktok:')) {
     const voiceId = voice.slice('tiktok:'.length);
-    // Active cues wait at most 2.4s before falling back to fast Google TTS so video never goes silent;
-    // prefetch requests can take up to 7s to warm the cache ahead of time!
-    const timeoutMs = isPrefetch ? 7000 : 2400;
+    const timeoutMs = isTest ? 9500 : isPrefetch ? 7500 : 3200;
     try {
       return await fetchTikTokTTSChunk(chunk, voiceId, timeoutMs);
-    } catch {
-      if (isPrefetch) throw new Error('Prefetch tiktok timeout');
+    } catch (err) {
+      if (isPrefetch) throw err;
       return await fetchGoogleTTSChunk(chunk, lang);
     }
   }
   return await fetchGoogleTTSChunk(chunk, lang);
 }
 
-async function handleFetchTTS(text, voice = 'google:id', lang = 'id', isPrefetch = false) {
+async function handleFetchTTS(text, voice = 'google:id', lang = 'id', options = {}) {
   const chunks = splitTextForTTS(text);
   if (chunks.length === 0) return [];
   const audioDataUrls = [];
   for (const chunk of chunks) {
-    const dataUrl = await fetchSingleTTSChunk(chunk, voice, lang, isPrefetch);
+    const dataUrl = await fetchSingleTTSChunk(chunk, voice, lang, options);
     audioDataUrls.push(dataUrl);
   }
   return audioDataUrls;
@@ -332,12 +342,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'FETCH_TTS_AUDIO') {
-    handleFetchTTS(
-      message.text || '',
-      message.voice || 'google:id',
-      message.lang || 'id',
-      Boolean(message.isPrefetch)
-    )
+    handleFetchTTS(message.text || '', message.voice || 'google:id', message.lang || 'id', {
+      isPrefetch: Boolean(message.isPrefetch),
+      isTest: Boolean(message.isTest)
+    })
       .then((audioUrls) => sendResponse({ ok: true, audioUrls }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
