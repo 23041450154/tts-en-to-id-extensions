@@ -73,7 +73,7 @@ function renderSettings(s) {
   els.appRoot.classList.toggle('is-off', !isMasterOn);
   els.btnMasterToggle.classList.toggle('on', isMasterOn);
   els.btnMasterToggle.classList.toggle('off', !isMasterOn);
-  els.masterToggleText.textContent = isMasterOn ? 'Aktif' : 'Nonaktif';
+  els.masterToggleText.textContent = isMasterOn ? 'ON' : 'OFF';
 
   els.enabled.checked = Boolean(s.enabled);
   els.showOriginal.checked = Boolean(s.showOriginal);

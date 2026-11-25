@@ -673,6 +673,7 @@
       this.dryGain = null;
       this.wetGain = null;
       this.active = false;
+      this.pendingEnable = false;
       this.corsWarned = false;
     }
 
@@ -688,7 +689,7 @@
       }
     }
 
-    ensureAttached(video) {
+    async ensureAttached(video) {
       if (!video) return false;
       if (this.attachedVideo === video && this.ctx) {
         return true;
@@ -703,7 +704,6 @@
         return true;
       }
 
-      // Guard against muting direct cross-origin MP4 videos without CORS headers
       if (!this.isCorsSafe(video)) {
         if (!this.corsWarned) {
           this.corsWarned = true;
@@ -717,6 +717,25 @@
         if (!AudioCtx) return false;
 
         const ctx = new AudioCtx();
+        // CRITICAL: Never hijack <video> via createMediaElementSource while AudioContext is suspended,
+        // otherwise Chrome mutes the <video> completely until a user gesture inside the page!
+        if (ctx.state === 'suspended') {
+          try {
+            await ctx.resume();
+          } catch {
+            // ignore
+          }
+        }
+        if (ctx.state !== 'running') {
+          try {
+            ctx.close();
+          } catch {
+            // ignore
+          }
+          this.pendingEnable = true;
+          return false;
+        }
+
         const source = ctx.createMediaElementSource(video);
 
         const dryGain = ctx.createGain();
@@ -800,6 +819,7 @@
         this.ctx = ctx;
         this.dryGain = dryGain;
         this.wetGain = wetGain;
+        this.pendingEnable = false;
         return true;
       } catch {
         return false;
@@ -810,31 +830,51 @@
       if (this.ctx && this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
       }
+      if (this.pendingEnable && videoEl && settings.masterEnabled !== false && settings.vocalRemoveEnabled) {
+        this.setEnabled(videoEl, true);
+      }
     }
 
     setEnabled(video, enable) {
       if (!video) return false;
 
-      if (!enable && !this.ctx && !video.__ytIndoSubVocalGraph) {
+      if (!enable) {
+        this.pendingEnable = false;
         this.active = false;
+        if (this.ctx && this.dryGain && this.wetGain) {
+          this.resumeIfNeeded();
+          const now = this.ctx.currentTime;
+          this.dryGain.gain.cancelScheduledValues(now);
+          this.wetGain.gain.cancelScheduledValues(now);
+          this.dryGain.gain.setValueAtTime(1.0, now);
+          this.wetGain.gain.setValueAtTime(0.0, now);
+        }
         return false;
       }
 
-      if (!this.ensureAttached(video)) {
-        this.active = false;
-        return false;
+      // Already attached synchronously
+      if (this.attachedVideo === video && this.ctx && this.ctx.state === 'running') {
+        const now = this.ctx.currentTime;
+        this.dryGain.gain.cancelScheduledValues(now);
+        this.wetGain.gain.cancelScheduledValues(now);
+        this.dryGain.gain.setTargetAtTime(0.0, now, 0.05);
+        this.wetGain.gain.setTargetAtTime(1.0, now, 0.05);
+        this.active = true;
+        return true;
       }
-      this.resumeIfNeeded();
 
-      const now = this.ctx.currentTime;
-      const targetDry = enable ? 0.0 : 1.0;
-      const targetWet = enable ? 1.0 : 0.0;
+      // Async safe attach (only takes over <video> once AudioContext is actually running)
+      this.ensureAttached(video).then((ok) => {
+        if (!ok || !this.ctx) return;
+        const stillWant = settings.masterEnabled !== false && settings.vocalRemoveEnabled;
+        const now = this.ctx.currentTime;
+        this.dryGain.gain.cancelScheduledValues(now);
+        this.wetGain.gain.cancelScheduledValues(now);
+        this.dryGain.gain.setTargetAtTime(stillWant ? 0.0 : 1.0, now, 0.05);
+        this.wetGain.gain.setTargetAtTime(stillWant ? 1.0 : 0.0, now, 0.05);
+        this.active = stillWant;
+      });
 
-      this.dryGain.gain.cancelScheduledValues(now);
-      this.wetGain.gain.cancelScheduledValues(now);
-      this.dryGain.gain.setTargetAtTime(targetDry, now, 0.05);
-      this.wetGain.gain.setTargetAtTime(targetWet, now, 0.05);
-      this.active = Boolean(enable);
       return this.active;
     }
   }
@@ -856,19 +896,20 @@
 
     if (shouldDuck) {
       if (!isDucking) {
-        savedVideoVolume = videoEl.volume;
+        if (videoEl.volume > 0.05) {
+          savedVideoVolume = videoEl.volume;
+        }
         isDucking = true;
       }
       const targetVol = Math.max(0, Math.min(1, Number(settings.duckVolume)));
       if (Math.abs(videoEl.volume - targetVol) > 0.01) {
         videoEl.volume = targetVol;
       }
-    } else if (isDucking) {
+    } else if (isDucking || (!isMasterOn && videoEl.volume < 0.05 && !videoEl.muted)) {
       isDucking = false;
-      if (savedVideoVolume !== null) {
-        videoEl.volume = savedVideoVolume;
-        savedVideoVolume = null;
-      }
+      const restoreVol = savedVideoVolume !== null && savedVideoVolume > 0.05 ? savedVideoVolume : 1.0;
+      videoEl.volume = restoreVol;
+      savedVideoVolume = null;
     }
   }
 
@@ -1392,6 +1433,10 @@
       }
     }
 
+    if (floatingBarEl) {
+      floatingBarEl.style.display = isMasterOn ? 'flex' : 'none';
+    }
+
     if (enLineEl) {
       enLineEl.style.display = settings.showOriginal ? 'inline-block' : 'none';
     }
@@ -1498,7 +1543,7 @@
         updateActiveCue(true);
       });
       videoEl.addEventListener('volumechange', () => {
-        if (!isDucking && videoEl) {
+        if (!isDucking && videoEl && videoEl.volume > 0.05) {
           savedVideoVolume = videoEl.volume;
         }
       });
