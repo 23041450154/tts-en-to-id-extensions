@@ -3,6 +3,7 @@ const DEFAULT_SETTINGS = {
   showOriginal: true,
   ttsEnabled: true,
   autoTtsSpeed: true,
+  vocalRemoveEnabled: false,
   ttsVoice: 'google:id',
   ttsRate: 1.1,
   ttsVolume: 1.0,
@@ -15,6 +16,7 @@ const els = {
   showOriginal: document.getElementById('showOriginal'),
   ttsEnabled: document.getElementById('ttsEnabled'),
   autoTtsSpeed: document.getElementById('autoTtsSpeed'),
+  vocalRemoveEnabled: document.getElementById('vocalRemoveEnabled'),
   ttsVoice: document.getElementById('ttsVoice'),
   browserVoicesGroup: document.getElementById('browserVoicesGroup'),
   ttsRate: document.getElementById('ttsRate'),
@@ -66,6 +68,7 @@ function renderSettings(s) {
   els.showOriginal.checked = Boolean(s.showOriginal);
   els.ttsEnabled.checked = Boolean(s.ttsEnabled);
   els.autoTtsSpeed.checked = Boolean(s.autoTtsSpeed);
+  els.vocalRemoveEnabled.checked = Boolean(s.vocalRemoveEnabled);
   els.ttsVoice.value = s.ttsVoice || 'google:id';
   if (!els.ttsVoice.value) {
     els.ttsVoice.value = 'google:id';
@@ -222,6 +225,7 @@ els.enabled.addEventListener('change', () => savePatch({ enabled: els.enabled.ch
 els.showOriginal.addEventListener('change', () => savePatch({ showOriginal: els.showOriginal.checked }));
 els.ttsEnabled.addEventListener('change', () => savePatch({ ttsEnabled: els.ttsEnabled.checked }));
 els.autoTtsSpeed.addEventListener('change', () => savePatch({ autoTtsSpeed: els.autoTtsSpeed.checked }));
+els.vocalRemoveEnabled.addEventListener('change', () => savePatch({ vocalRemoveEnabled: els.vocalRemoveEnabled.checked }));
 els.ttsVoice.addEventListener('change', () => savePatch({ ttsVoice: els.ttsVoice.value }));
 
 els.ttsRate.addEventListener('input', () => savePatch({ ttsRate: parseFloat(els.ttsRate.value) }));

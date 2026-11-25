@@ -12,7 +12,8 @@ Ekstensi browser (Chrome / Edge / Brave — Manifest V3) untuk menerjemahkan sub
   - **Noor — Wanita Indonesia** (natural)
   - **Browser / Sistem TTS** (otomatis mendeteksi semua suara yang terpasang di browser/OS)
 - **Auto Deteksi Kecepatan TTS**: otomatis menyesuaikan kecepatan suara agar sinkron dengan tempo pembicara (dengan `preservesPitch` agar suara tetap natural dan *anti-cutoff grace* agar akhir kata tidak terpotong).
-- **Auto Audio Ducking**: otomatis memelankan volume video asli saat dubbing aktif dan mengembalikannya saat dubbing dimatikan atau video dijeda.
+- **Hilangkan Vokal Asli (BGM & SFX Tetap Ada)**: menggunakan Web Audio API 3-Band Mid/Side DSP secara real-time untuk meredam suara pembicara asli di kanal tengah sementara musik latar, bass, dan efek suara stereo tetap terdengar.
+- **Auto Audio Ducking**: otomatis memelankan volume video asli saat dubbing aktif (ketika mode Hilangkan Vokal Asli tidak aktif) dan mengembalikannya saat dubbing dimatikan atau video dijeda.
 - **Tombol Cepat di Player YouTube**: toggle **`ID`** dan **`TTS`** langsung di bar kontrol kanan YouTube.
 
 ## Cara Instalasi (Load Unpacked)

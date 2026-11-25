@@ -185,6 +185,10 @@ h1 {
   background: #0ea5e9;
 }
 
+.switch input:checked + .slider.vocal {
+  background: #a855f7;
+}
+
 .switch input:checked + .slider::before {
   transform: translateX(18px);
 }

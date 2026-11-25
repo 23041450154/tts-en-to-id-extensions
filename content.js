@@ -10,6 +10,7 @@
     showOriginal: true,
     ttsEnabled: true,
     autoTtsSpeed: true,
+    vocalRemoveEnabled: false,
     ttsVoice: 'google:id', // 'google:id' | 'tiktok:id_male_putra' | 'tiktok:id_male_darma' | 'tiktok:id_female_noor' | 'browser:...'
     ttsRate: 1.1,
     ttsVolume: 1.0,
@@ -333,12 +334,181 @@
   }
 
   // =========================
+  // Real-Time Web Audio Vocal Remover (3-Band Mid/Side DSP)
+  // =========================
+
+  class VocalRemover {
+    constructor() {
+      this.attachedVideo = null;
+      this.ctx = null;
+      this.dryGain = null;
+      this.wetGain = null;
+      this.active = false;
+    }
+
+    ensureAttached(video) {
+      if (!video) return false;
+      if (this.attachedVideo === video && this.ctx) {
+        return true;
+      }
+
+      // Reuse graph if already attached to this exact video element
+      if (video.__ytIndoSubVocalGraph) {
+        const g = video.__ytIndoSubVocalGraph;
+        this.attachedVideo = video;
+        this.ctx = g.ctx;
+        this.dryGain = g.dryGain;
+        this.wetGain = g.wetGain;
+        return true;
+      }
+
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return false;
+
+        const ctx = new AudioCtx();
+        const source = ctx.createMediaElementSource(video);
+
+        // Dry path (bit-identical original audio when Vocal Remover is OFF)
+        const dryGain = ctx.createGain();
+        dryGain.gain.value = 1.0;
+
+        // Wet path: 3-Band Mid/Side vocal cancellation
+        // Center vocals sit in Mid (155 Hz - 6800 Hz); stereo music & SFX sit in Side (L - R) + low bass
+        const splitter = ctx.createChannelSplitter(2);
+        const merger = ctx.createChannelMerger(2);
+
+        // Side channel: S = 0.5 * (L - R) — zero center vocal, pure stereo BGM/SFX/ambience
+        const sideBus = ctx.createGain();
+        const sideLGain = ctx.createGain();
+        const sideRGain = ctx.createGain();
+        sideLGain.gain.value = 0.5;
+        sideRGain.gain.value = -0.5;
+        splitter.connect(sideLGain, 0);
+        splitter.connect(sideRGain, 1);
+        sideLGain.connect(sideBus);
+        sideRGain.connect(sideBus);
+
+        // Reconstruct full stereo width from Side (+S to L, -S to R)
+        const sidePosGain = ctx.createGain();
+        const sideNegGain = ctx.createGain();
+        sidePosGain.gain.value = 1.35;
+        sideNegGain.gain.value = -1.35;
+        sideBus.connect(sidePosGain);
+        sideBus.connect(sideNegGain);
+        sidePosGain.connect(merger, 0, 0);
+        sideNegGain.connect(merger, 0, 1);
+
+        // Mid channel: M = 0.5 * (L + R) — strip 155 Hz..6800 Hz vocal band, keep low bass & crisp air
+        const midBus = ctx.createGain();
+        const midLGain = ctx.createGain();
+        const midRGain = ctx.createGain();
+        midLGain.gain.value = 0.5;
+        midRGain.gain.value = 0.5;
+        splitter.connect(midLGain, 0);
+        splitter.connect(midRGain, 1);
+        midLGain.connect(midBus);
+        midRGain.connect(midBus);
+
+        // Preserve punchy low bass (< 155 Hz)
+        const lowPass = ctx.createBiquadFilter();
+        lowPass.type = 'lowpass';
+        lowPass.frequency.value = 155;
+        lowPass.Q.value = 0.707;
+        const lowGain = ctx.createGain();
+        lowGain.gain.value = 0.78;
+        midBus.connect(lowPass);
+        lowPass.connect(lowGain);
+
+        // Preserve subtle high air (> 6800 Hz) for SFX sparkle without vocal sibilance
+        const highPass = ctx.createBiquadFilter();
+        highPass.type = 'highpass';
+        highPass.frequency.value = 6800;
+        highPass.Q.value = 0.707;
+        const highGain = ctx.createGain();
+        highGain.gain.value = 0.25;
+        midBus.connect(highPass);
+        highPass.connect(highGain);
+
+        lowGain.connect(merger, 0, 0);
+        lowGain.connect(merger, 0, 1);
+        highGain.connect(merger, 0, 0);
+        highGain.connect(merger, 0, 1);
+
+        // Soft limiter to prevent clipping on loud BGM
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -3;
+        limiter.knee.value = 12;
+        limiter.ratio.value = 6;
+        limiter.attack.value = 0.005;
+        limiter.release.value = 0.1;
+
+        const wetGain = ctx.createGain();
+        wetGain.gain.value = 0.0;
+
+        source.connect(dryGain);
+        dryGain.connect(ctx.destination);
+
+        source.connect(splitter);
+        merger.connect(limiter);
+        limiter.connect(wetGain);
+        wetGain.connect(ctx.destination);
+
+        video.__ytIndoSubVocalGraph = { ctx, source, dryGain, wetGain };
+        this.attachedVideo = video;
+        this.ctx = ctx;
+        this.dryGain = dryGain;
+        this.wetGain = wetGain;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    resumeIfNeeded() {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    }
+
+    setEnabled(video, enable) {
+      if (!video) return;
+
+      // Lazy attach: only create AudioContext once user enables Vocal Remover
+      if (!enable && !this.ctx && !video.__ytIndoSubVocalGraph) {
+        this.active = false;
+        return;
+      }
+
+      if (!this.ensureAttached(video)) return;
+      this.resumeIfNeeded();
+
+      const now = this.ctx.currentTime;
+      const targetDry = enable ? 0.0 : 1.0;
+      const targetWet = enable ? 1.0 : 0.0;
+
+      this.dryGain.gain.cancelScheduledValues(now);
+      this.wetGain.gain.cancelScheduledValues(now);
+      this.dryGain.gain.setTargetAtTime(targetDry, now, 0.05);
+      this.wetGain.gain.setTargetAtTime(targetWet, now, 0.05);
+      this.active = Boolean(enable);
+    }
+  }
+
+  const vocalRemover = new VocalRemover();
+
+  // =========================
   // Audio Ducking
   // =========================
 
   function applyAudioDucking() {
     if (!videoEl) return;
-    const shouldDuck = settings.enabled && settings.ttsEnabled && !videoEl.paused;
+
+    const useVocalRemover = Boolean(settings.enabled && settings.vocalRemoveEnabled);
+    vocalRemover.setEnabled(videoEl, useVocalRemover);
+
+    // When Vocal Remover is ON, keep original BGM/SFX audible (don't duck the whole video to 15%)
+    const shouldDuck = Boolean(settings.enabled && settings.ttsEnabled && !videoEl.paused && !useVocalRemover);
 
     if (shouldDuck) {
       if (!isDucking) {
@@ -952,6 +1122,7 @@
       applyAudioDucking();
     });
     videoEl.addEventListener('play', () => {
+      vocalRemover.resumeIfNeeded();
       applyAudioDucking();
       ttsEngine.lastSpokenKey = '';
       updateActiveCue(true);
@@ -1187,6 +1358,9 @@
   async function init() {
     await loadSettings();
     checkPageState();
+
+    document.addEventListener('pointerdown', () => vocalRemover.resumeIfNeeded(), { passive: true });
+    document.addEventListener('keydown', () => vocalRemover.resumeIfNeeded(), { passive: true });
 
     window.addEventListener('yt-navigate-finish', () => {
       setTimeout(checkPageState, 250);
