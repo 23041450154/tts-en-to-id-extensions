@@ -828,10 +828,10 @@
   function applyAudioDucking() {
     if (!videoEl) return;
 
-    const wantVocalRemover = Boolean(settings.enabled && settings.vocalRemoveEnabled);
+    const wantVocalRemover = Boolean(settings.vocalRemoveEnabled);
     const vocalActive = vocalRemover.setEnabled(videoEl, wantVocalRemover);
 
-    const shouldDuck = Boolean(settings.enabled && settings.ttsEnabled && !videoEl.paused && !vocalActive);
+    const shouldDuck = Boolean(settings.ttsEnabled && !videoEl.paused && !vocalActive);
 
     if (shouldDuck) {
       if (!isDucking) {
@@ -1046,7 +1046,7 @@
           this.graceTimer = null;
           if (this.pendingGraceKey !== cueKey) return;
           this.pendingGraceKey = '';
-          if (!settings.enabled || !settings.ttsEnabled || (videoEl && videoEl.paused)) return;
+          if (!settings.ttsEnabled || (videoEl && videoEl.paused)) return;
           this.startSpeakingNow(clean, cueKey, windowEndVideoSec, fallbackWallSec);
         }, Math.round(prevLeft * 1000) + 15);
         return;
@@ -1078,7 +1078,7 @@
       }
 
       let audioUrls = await this.fetchOnlineAudio(clean, false);
-      if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
+      if (token !== this.playToken || !settings.ttsEnabled) return;
       if (videoEl && videoEl.paused) return;
 
       if (!audioUrls || audioUrls.length === 0) {
@@ -1094,7 +1094,7 @@
             }
           );
         });
-        if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
+        if (token !== this.playToken || !settings.ttsEnabled) return;
         if (videoEl && videoEl.paused) return;
       }
 
@@ -1258,18 +1258,13 @@
       const next = !settings.enabled;
       saveSettingsPatch({ enabled: next });
       showToast(next ? 'Subtitle Indonesia: AKTIF' : 'Subtitle Indonesia: NONAKTIF');
-      if (!next) {
-        ttsEngine.stop();
-        applyAudioDucking();
-      } else {
-        updateActiveCue(true);
-      }
+      updateActiveCue(true);
     };
 
     const onTtsClick = (e) => {
       e.stopPropagation();
       const next = !settings.ttsEnabled;
-      saveSettingsPatch({ ttsEnabled: next, enabled: next ? true : settings.enabled });
+      saveSettingsPatch({ ttsEnabled: next });
       showToast(next ? 'Dubbing Suara Indonesia: AKTIF' : 'Dubbing Suara Indonesia: NONAKTIF');
       if (!next) {
         ttsEngine.stop();
@@ -1342,7 +1337,7 @@
       subBtnEl.classList.toggle('active-sub', Boolean(settings.enabled));
     }
     if (ttsBtnEl) {
-      const active = Boolean(settings.enabled && settings.ttsEnabled);
+      const active = Boolean(settings.ttsEnabled);
       ttsBtnEl.classList.toggle('active-tts', active);
       if (active && settings.autoTtsSpeed) {
         const info = ttsEngine.getStatusSummary();
@@ -1403,11 +1398,11 @@
   function updateActiveCue(force = false) {
     if (!videoEl) return;
 
-    if (!settings.enabled) {
-      if (overlayEl) overlayEl.classList.add('yt-indosub-hidden');
-      return;
+    if (!settings.enabled && overlayEl) {
+      overlayEl.classList.add('yt-indosub-hidden');
     }
 
+    if (!settings.enabled && !settings.ttsEnabled) return;
     if (state.cues.length === 0) return;
 
     const now = videoEl.currentTime;
@@ -1429,7 +1424,7 @@
       translateRange(idx, 12, state.runToken);
     }
 
-    if (changed || force) {
+    if (settings.enabled && (changed || force)) {
       renderSubtitleText(cue.en, cue.idText);
     }
 
@@ -1523,7 +1518,7 @@
 
     let debounceTimer = null;
     state.domFallbackObserver = new MutationObserver(() => {
-      if (token !== state.runToken || state.cues.length > 0 || !settings.enabled) return;
+      if (token !== state.runToken || state.cues.length > 0 || (!settings.enabled && !settings.ttsEnabled)) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
         let rawText = '';
@@ -1720,15 +1715,14 @@
       settings[key] = change.newValue;
     }
     applySettingsUI();
-    if (!settings.enabled || !settings.ttsEnabled) {
+    if (!settings.ttsEnabled) {
       ttsEngine.stop();
     } else if ((!prevTts && settings.ttsEnabled) || prevVoice !== settings.ttsVoice) {
       ttsEngine.stop();
       ttsEngine.lastSpokenKey = '';
       updateActiveCue(true);
-    } else {
-      updateActiveCue(true);
     }
+    updateActiveCue(true);
   });
 
   // =========================
