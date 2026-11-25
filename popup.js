@@ -3,7 +3,7 @@ const DEFAULT_SETTINGS = {
   showOriginal: true,
   ttsEnabled: true,
   autoTtsSpeed: true,
-  ttsEngine: 'google',
+  ttsVoice: 'google:id',
   ttsRate: 1.1,
   ttsVolume: 1.0,
   duckVolume: 0.15,
@@ -15,7 +15,8 @@ const els = {
   showOriginal: document.getElementById('showOriginal'),
   ttsEnabled: document.getElementById('ttsEnabled'),
   autoTtsSpeed: document.getElementById('autoTtsSpeed'),
-  ttsEngine: document.getElementById('ttsEngine'),
+  ttsVoice: document.getElementById('ttsVoice'),
+  browserVoicesGroup: document.getElementById('browserVoicesGroup'),
   ttsRate: document.getElementById('ttsRate'),
   ttsRateLabel: document.getElementById('ttsRateLabel'),
   ttsRateVal: document.getElementById('ttsRateVal'),
@@ -35,12 +36,39 @@ const els = {
 let currentSettings = { ...DEFAULT_SETTINGS };
 let testAudio = null;
 
+function populateBrowserVoices() {
+  if (!('speechSynthesis' in window) || !els.browserVoicesGroup) return;
+  const voices = window.speechSynthesis.getVoices() || [];
+  if (voices.length === 0) return;
+
+  // Keep default auto option, then list Indonesian voices first followed by others
+  els.browserVoicesGroup.innerHTML = '<option value="browser:auto">Browser TTS (Otomatis)</option>';
+
+  const idVoices = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith('id'));
+  const otherVoices = voices.filter((v) => !v.lang || !v.lang.toLowerCase().startsWith('id')).slice(0, 12);
+  const ordered = [...idVoices, ...otherVoices];
+
+  for (const v of ordered) {
+    const opt = document.createElement('option');
+    opt.value = `browser:${v.name}`;
+    opt.textContent = `${v.name} (${v.lang || 'OS'})`;
+    els.browserVoicesGroup.appendChild(opt);
+  }
+
+  if (currentSettings.ttsVoice) {
+    els.ttsVoice.value = currentSettings.ttsVoice;
+  }
+}
+
 function renderSettings(s) {
   els.enabled.checked = Boolean(s.enabled);
   els.showOriginal.checked = Boolean(s.showOriginal);
   els.ttsEnabled.checked = Boolean(s.ttsEnabled);
   els.autoTtsSpeed.checked = Boolean(s.autoTtsSpeed);
-  els.ttsEngine.value = s.ttsEngine || 'google';
+  els.ttsVoice.value = s.ttsVoice || 'google:id';
+  if (!els.ttsVoice.value) {
+    els.ttsVoice.value = 'google:id';
+  }
 
   els.ttsRateLabel.textContent = s.autoTtsSpeed ? 'Kecepatan Dasar (Auto)' : 'Kecepatan Suara (Manual)';
   els.ttsRate.value = s.ttsRate;
@@ -114,6 +142,7 @@ function refreshTabStatus() {
 
 async function runVoiceTest() {
   const sample = 'Halo! Ini adalah tes suara dubbing bahasa Indonesia otomatis untuk YouTube.';
+  const voice = currentSettings.ttsVoice || 'google:id';
   els.btnTestTts.textContent = 'Memutar...';
   els.btnTestTts.disabled = true;
 
@@ -131,7 +160,7 @@ async function runVoiceTest() {
     testAudio = null;
   }
 
-  if (currentSettings.ttsEngine === 'browser') {
+  if (voice.startsWith('browser:')) {
     if (!('speechSynthesis' in window)) {
       setStatusUI('error', 'Browser TTS tidak tersedia');
       restoreBtn();
@@ -142,22 +171,31 @@ async function runVoiceTest() {
     utter.lang = 'id-ID';
     utter.rate = Number(currentSettings.ttsRate) || 1.1;
     utter.volume = Number(currentSettings.ttsVolume) || 1.0;
+
+    const selectedName = voice.slice('browser:'.length);
     const voices = window.speechSynthesis.getVoices() || [];
-    const idVoice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('id'));
-    if (idVoice) utter.voice = idVoice;
+    const picked =
+      (selectedName && selectedName !== 'auto'
+        ? voices.find((v) => v.name === selectedName || v.voiceURI === selectedName)
+        : null) ||
+      voices.find((v) => v.lang && v.lang.toLowerCase() === 'id-id') ||
+      voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('id'));
+    if (picked) utter.voice = picked;
+
     utter.onend = utter.onerror = restoreBtn;
     window.speechSynthesis.speak(utter);
     return;
   }
 
-  chrome.runtime.sendMessage({ type: 'FETCH_TTS_AUDIO', text: sample, lang: 'id' }, (resp) => {
+  chrome.runtime.sendMessage({ type: 'FETCH_TTS_AUDIO', text: sample, voice, lang: 'id' }, (resp) => {
     if (chrome.runtime.lastError || !resp || !resp.ok || !resp.audioUrls || resp.audioUrls.length === 0) {
-      setStatusUI('error', 'Gagal memuat suara Google TTS');
+      setStatusUI('error', 'Gagal memuat suara TTS');
       restoreBtn();
       return;
     }
 
     testAudio = new Audio(resp.audioUrls[0]);
+    testAudio.preservesPitch = true;
     testAudio.volume = Math.max(0.1, Math.min(1, Number(currentSettings.ttsVolume) || 1));
     testAudio.playbackRate = Math.max(0.8, Math.min(1.8, Number(currentSettings.ttsRate) || 1.1));
     testAudio.onended = testAudio.onerror = restoreBtn;
@@ -170,7 +208,7 @@ els.enabled.addEventListener('change', () => savePatch({ enabled: els.enabled.ch
 els.showOriginal.addEventListener('change', () => savePatch({ showOriginal: els.showOriginal.checked }));
 els.ttsEnabled.addEventListener('change', () => savePatch({ ttsEnabled: els.ttsEnabled.checked }));
 els.autoTtsSpeed.addEventListener('change', () => savePatch({ autoTtsSpeed: els.autoTtsSpeed.checked }));
-els.ttsEngine.addEventListener('change', () => savePatch({ ttsEngine: els.ttsEngine.value }));
+els.ttsVoice.addEventListener('change', () => savePatch({ ttsVoice: els.ttsVoice.value }));
 
 els.ttsRate.addEventListener('input', () => savePatch({ ttsRate: parseFloat(els.ttsRate.value) }));
 els.ttsVolume.addEventListener('input', () => savePatch({ ttsVolume: parseFloat(els.ttsVolume.value) }));
@@ -196,9 +234,14 @@ els.btnReload.addEventListener('click', () => {
   });
 });
 
-// Init + live poll while popup is open so user can watch Auto TTS speed adapt
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.addEventListener('voiceschanged', populateBrowserVoices);
+}
+
+// Init + live poll while popup is open
 chrome.storage.sync.get(DEFAULT_SETTINGS, (stored) => {
   currentSettings = { ...DEFAULT_SETTINGS, ...(stored || {}) };
+  populateBrowserVoices();
   renderSettings(currentSettings);
   refreshTabStatus();
   setInterval(refreshTabStatus, 1000);

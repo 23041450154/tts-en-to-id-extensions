@@ -72,10 +72,17 @@
 
     <section class="card">
       <div class="field">
-        <label class="label" for="ttsEngine">Mesin Suara TTS</label>
-        <select id="ttsEngine" class="select">
-          <option value="google">Google TTS (Natural — Rekomendasi)</option>
-          <option value="browser">Browser TTS (Web Speech API)</option>
+        <label class="label" for="ttsVoice">Pilihan Suara (Gratis, Tanpa API)</label>
+        <select id="ttsVoice" class="select">
+          <optgroup label="Suara Online Indonesia">
+            <option value="google:id">Google — Wanita (Cepat &amp; Stabil)</option>
+            <option value="tiktok:id_male_putra">Putra — Pria Indonesia (Natural)</option>
+            <option value="tiktok:id_male_darma">Darma — Pria Indonesia (Hangat)</option>
+            <option value="tiktok:id_female_noor">Noor — Wanita Indonesia (Natural)</option>
+          </optgroup>
+          <optgroup id="browserVoicesGroup" label="Suara Browser / Sistem">
+            <option value="browser:auto">Browser TTS (Otomatis)</option>
+          </optgroup>
         </select>
       </div>
 

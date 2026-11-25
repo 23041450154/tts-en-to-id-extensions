@@ -225,8 +225,8 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
-async function fetchSingleTTSChunk(chunk, lang = 'id') {
-  const cacheKey = `${lang}:${chunk}`;
+async function fetchGoogleTTSChunk(chunk, lang = 'id') {
+  const cacheKey = `google:${lang}:${chunk}`;
   if (ttsCache.has(cacheKey)) {
     return ttsCache.get(cacheKey);
   }
@@ -240,11 +240,11 @@ async function fetchSingleTTSChunk(chunk, lang = 'id') {
 
   const res = await fetch(`https://translate.google.com/translate_tts?${params.toString()}`);
   if (!res.ok) {
-    throw new Error(`TTS HTTP ${res.status}`);
+    throw new Error(`Google TTS HTTP ${res.status}`);
   }
   const buffer = await res.arrayBuffer();
   if (!buffer || buffer.byteLength < 100) {
-    throw new Error('TTS returned empty audio');
+    throw new Error('Google TTS returned empty audio');
   }
 
   const dataUrl = `data:audio/mpeg;base64,${arrayBufferToBase64(buffer)}`;
@@ -252,12 +252,49 @@ async function fetchSingleTTSChunk(chunk, lang = 'id') {
   return dataUrl;
 }
 
-async function handleFetchTTS(text, lang = 'id') {
+async function fetchTikTokTTSChunk(chunk, voiceId) {
+  const cacheKey = `tiktok:${voiceId}:${chunk}`;
+  if (ttsCache.has(cacheKey)) {
+    return ttsCache.get(cacheKey);
+  }
+
+  const res = await fetch('https://ottsy.weilbyte.dev/api/generation', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: chunk, voice: voiceId })
+  });
+  if (!res.ok) {
+    throw new Error(`TikTok TTS HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  if (!json || !json.success || !json.data) {
+    throw new Error(json?.error || 'TikTok TTS empty response');
+  }
+
+  const dataUrl = `data:audio/mpeg;base64,${json.data}`;
+  setBounded(ttsCache, cacheKey, dataUrl, TTS_CACHE_LIMIT);
+  return dataUrl;
+}
+
+async function fetchSingleTTSChunk(chunk, voice = 'google:id', lang = 'id') {
+  if (voice && voice.startsWith('tiktok:')) {
+    const voiceId = voice.slice('tiktok:'.length);
+    try {
+      return await fetchTikTokTTSChunk(chunk, voiceId);
+    } catch {
+      // Automatic fallback to Google TTS if upstream hiccups
+      return await fetchGoogleTTSChunk(chunk, lang);
+    }
+  }
+  return await fetchGoogleTTSChunk(chunk, lang);
+}
+
+async function handleFetchTTS(text, voice = 'google:id', lang = 'id') {
   const chunks = splitTextForTTS(text);
   if (chunks.length === 0) return [];
   const audioDataUrls = [];
   for (const chunk of chunks) {
-    const dataUrl = await fetchSingleTTSChunk(chunk, lang);
+    const dataUrl = await fetchSingleTTSChunk(chunk, voice, lang);
     audioDataUrls.push(dataUrl);
   }
   return audioDataUrls;
@@ -274,7 +311,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'FETCH_TTS_AUDIO') {
-    handleFetchTTS(message.text || '', message.lang || 'id')
+    handleFetchTTS(message.text || '', message.voice || 'google:id', message.lang || 'id')
       .then((audioUrls) => sendResponse({ ok: true, audioUrls }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

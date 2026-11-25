@@ -10,7 +10,7 @@
     showOriginal: true,
     ttsEnabled: true,
     autoTtsSpeed: true,
-    ttsEngine: 'google', // 'google' | 'browser'
+    ttsVoice: 'google:id', // 'google:id' | 'tiktok:id_male_putra' | 'tiktok:id_male_darma' | 'tiktok:id_female_noor' | 'browser:...'
     ttsRate: 1.1,
     ttsVolume: 1.0,
     duckVolume: 0.15,
@@ -490,21 +490,28 @@
       this.inflightFetches.clear();
     }
 
-    fetchGoogleAudio(text) {
+    isBrowserVoice() {
+      return (settings.ttsVoice || 'google:id').startsWith('browser:');
+    }
+
+    fetchOnlineAudio(text) {
       const clean = (text || '').trim();
       if (!clean) return Promise.resolve([]);
-      if (this.prefetchCache.has(clean)) {
-        return Promise.resolve(this.prefetchCache.get(clean));
+      const voice = settings.ttsVoice || 'google:id';
+      const cacheKey = `${voice}:${clean}`;
+
+      if (this.prefetchCache.has(cacheKey)) {
+        return Promise.resolve(this.prefetchCache.get(cacheKey));
       }
-      if (this.inflightFetches.has(clean)) {
-        return this.inflightFetches.get(clean);
+      if (this.inflightFetches.has(cacheKey)) {
+        return this.inflightFetches.get(cacheKey);
       }
 
       const promise = new Promise((resolve) => {
         chrome.runtime.sendMessage(
-          { type: 'FETCH_TTS_AUDIO', text: clean, lang: 'id' },
+          { type: 'FETCH_TTS_AUDIO', text: clean, voice, lang: 'id' },
           (resp) => {
-            this.inflightFetches.delete(clean);
+            this.inflightFetches.delete(cacheKey);
             if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls)) {
               resolve([]);
               return;
@@ -513,22 +520,22 @@
               const oldest = this.prefetchCache.keys().next().value;
               this.prefetchCache.delete(oldest);
             }
-            this.prefetchCache.set(clean, resp.audioUrls);
+            this.prefetchCache.set(cacheKey, resp.audioUrls);
             resolve(resp.audioUrls);
           }
         );
       });
 
-      this.inflightFetches.set(clean, promise);
+      this.inflightFetches.set(cacheKey, promise);
       return promise;
     }
 
     prefetchAhead(currentIdx) {
-      if (settings.ttsEngine !== 'google' || !settings.ttsEnabled) return;
+      if (this.isBrowserVoice() || !settings.ttsEnabled) return;
       for (let offset = 1; offset <= 3; offset++) {
         const nextCue = state.cues[currentIdx + offset];
         if (nextCue && nextCue.idText) {
-          this.fetchGoogleAudio(nextCue.idText);
+          this.fetchOnlineAudio(nextCue.idText);
         }
       }
     }
@@ -545,7 +552,7 @@
 
       // Gentle anti-cutoff grace: if previous line has <= 0.35s left, let its last syllable finish
       const prevLeft = this.getRemainingAudioSec();
-      if (settings.autoTtsSpeed && prevLeft > 0.04 && prevLeft <= 0.35 && settings.ttsEngine === 'google') {
+      if (settings.autoTtsSpeed && prevLeft > 0.04 && prevLeft <= 0.35 && !this.isBrowserVoice()) {
         clearTimeout(this.graceTimer);
         this.graceTimer = setTimeout(() => {
           this.graceTimer = null;
@@ -574,13 +581,13 @@
       this.stop();
       const token = this.playToken;
 
-      if (settings.ttsEngine === 'browser') {
+      if (this.isBrowserVoice()) {
         const remSec = this.getRemainingWallSec(windowEndVideoSec, fallbackWallSec);
         this.speakWithBrowser(clean, token, remSec);
         return;
       }
 
-      const audioUrls = await this.fetchGoogleAudio(clean);
+      const audioUrls = await this.fetchOnlineAudio(clean);
       if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
       if (videoEl && videoEl.paused) return;
 
@@ -666,10 +673,16 @@
         utter.volume = Math.max(0.1, Math.min(1, Number(settings.ttsVolume) || 1));
 
         const voices = window.speechSynthesis.getVoices() || [];
-        const idVoice =
+        const selectedName = (settings.ttsVoice || '').startsWith('browser:')
+          ? settings.ttsVoice.slice('browser:'.length)
+          : 'auto';
+        const pickedVoice =
+          (selectedName && selectedName !== 'auto'
+            ? voices.find((v) => v.name === selectedName || v.voiceURI === selectedName)
+            : null) ||
           voices.find((v) => v.lang && v.lang.toLowerCase() === 'id-id') ||
           voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('id'));
-        if (idVoice) utter.voice = idVoice;
+        if (pickedVoice) utter.voice = pickedVoice;
 
         utter.onstart = () => {
           if (token === this.playToken && idLineEl) {
@@ -1089,13 +1102,15 @@
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync') return;
     const prevTts = settings.ttsEnabled;
+    const prevVoice = settings.ttsVoice;
     for (const [key, change] of Object.entries(changes)) {
       settings[key] = change.newValue;
     }
     applySettingsUI();
     if (!settings.enabled || !settings.ttsEnabled) {
       ttsEngine.stop();
-    } else if (!prevTts && settings.ttsEnabled) {
+    } else if ((!prevTts && settings.ttsEnabled) || prevVoice !== settings.ttsVoice) {
+      ttsEngine.stop();
       ttsEngine.lastSpokenKey = '';
       updateActiveCue(true);
     } else {

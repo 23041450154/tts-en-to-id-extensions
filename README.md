@@ -5,9 +5,12 @@ Ekstensi browser (Chrome / Edge / Brave — Manifest V3) untuk menerjemahkan sub
 ## Fitur Utama
 
 - **Dual Subtitle (Inggris + Indonesia)** atau hanya Indonesia, diterjemahkan secara progresif mulai dari detik video saat ini.
-- **Text-to-Speech (Dubbing Bahasa Indonesia)** gratis tanpa API key:
-  - **Google TTS (Natural)** — default, suara jernih di Linux, Windows, dan macOS.
-  - **Browser TTS** — menggunakan Web Speech API bawaan browser.
+- **Text-to-Speech (Dubbing Bahasa Indonesia)** gratis tanpa API key dengan beberapa pilihan suara:
+  - **Google — Wanita** (cepat & stabil)
+  - **Putra — Pria Indonesia** (natural)
+  - **Darma — Pria Indonesia** (hangat)
+  - **Noor — Wanita Indonesia** (natural)
+  - **Browser / Sistem TTS** (otomatis mendeteksi semua suara yang terpasang di browser/OS)
 - **Auto Deteksi Kecepatan TTS**: otomatis menyesuaikan kecepatan suara agar sinkron dengan tempo pembicara (dengan `preservesPitch` agar suara tetap natural dan *anti-cutoff grace* agar akhir kata tidak terpotong).
 - **Auto Audio Ducking**: otomatis memelankan volume video asli saat dubbing aktif dan mengembalikannya saat dubbing dimatikan atau video dijeda.
 - **Tombol Cepat di Player YouTube**: toggle **`ID`** dan **`TTS`** langsung di bar kontrol kanan YouTube.
