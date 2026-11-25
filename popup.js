@@ -42,6 +42,7 @@ const els = {
 let currentSettings = { ...DEFAULT_SETTINGS };
 let testAudio = null;
 let statusHoldUntil = 0;
+let autoInjectAttempted = false;
 
 function populateBrowserVoices() {
   if (!('speechSynthesis' in window) || !els.browserVoicesGroup) return;
@@ -128,6 +129,28 @@ function queryActiveVideoTab(callback) {
   });
 }
 
+async function tryAutoInjectTab(tabId) {
+  if (!chrome.scripting) return false;
+  try {
+    await chrome.scripting.insertCSS({
+      target: { tabId, allFrames: true },
+      files: ['content.css']
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      files: ['page-bridge.js']
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content.js']
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function refreshTabStatus() {
   if (Date.now() < statusHoldUntil) return;
   if (currentSettings.masterEnabled === false) {
@@ -140,8 +163,17 @@ function refreshTabStatus() {
       return;
     }
 
-    chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, (resp) => {
+    chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, async (resp) => {
       if (chrome.runtime.lastError || !resp) {
+        if (!autoInjectAttempted) {
+          autoInjectAttempted = true;
+          setStatusUI('loading', 'Menghubungkan ke halaman video...');
+          const injected = await tryAutoInjectTab(tab.id);
+          if (injected) {
+            setTimeout(refreshTabStatus, 700);
+            return;
+          }
+        }
         setStatusUI('loading', 'Refresh halaman ini (F5 / Ctrl+R) agar ekstensi terhubung');
         return;
       }
@@ -266,9 +298,15 @@ els.btnReload.addEventListener('click', () => {
       setStatusUI('idle', 'Buka halaman video terlebih dahulu');
       return;
     }
-    chrome.tabs.sendMessage(tab.id, { type: 'RELOAD_CAPTIONS' }, () => {
+    chrome.tabs.sendMessage(tab.id, { type: 'RELOAD_CAPTIONS' }, async () => {
       if (chrome.runtime.lastError) {
-        setStatusUI('error', 'Refresh tab video lalu coba lagi');
+        setStatusUI('loading', 'Menghubungkan ulang ke tab video...');
+        const ok = await tryAutoInjectTab(tab.id);
+        if (ok) {
+          setTimeout(refreshTabStatus, 800);
+        } else {
+          setStatusUI('error', 'Refresh tab video (F5) lalu coba lagi');
+        }
         return;
       }
       setStatusUI('loading', 'Memuat ulang subtitle...');
