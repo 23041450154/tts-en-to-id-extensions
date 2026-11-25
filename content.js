@@ -4,6 +4,7 @@
 
   const BRIDGE_SRC = 'YT_INDOSUB_BRIDGE';
   const CONTENT_SRC = 'YT_INDOSUB_CONTENT';
+  const isYouTubeHost = /(^|\.)youtube\.com$/i.test(location.hostname);
 
   const DEFAULT_SETTINGS = {
     enabled: true,
@@ -11,7 +12,7 @@
     ttsEnabled: true,
     autoTtsSpeed: true,
     vocalRemoveEnabled: false,
-    ttsVoice: 'google:id', // 'google:id' | 'tiktok:id_male_putra' | 'tiktok:id_male_darma' | 'tiktok:id_female_noor' | 'browser:...'
+    ttsVoice: 'google:id',
     ttsRate: 1.1,
     ttsVolume: 1.0,
     duckVolume: 0.15,
@@ -21,12 +22,14 @@
   let settings = { ...DEFAULT_SETTINGS };
 
   const state = {
-    videoId: '',
+    siteName: isYouTubeHost ? 'YouTube' : location.hostname.replace(/^www\./, ''),
+    mediaKey: '',
+    videoId: '', // YouTube videoId when on YouTube
     sourceLang: 'en',
     cues: [], // { id, start, end, en, idText, translating }
     activeCueIndex: -1,
     status: 'idle', // idle | loading | ready | no_captions | error
-    statusDetail: 'Menunggu video YouTube...',
+    statusDetail: 'Menunggu video...',
     translatedCount: 0,
     runToken: 0,
     domFallbackObserver: null,
@@ -42,6 +45,8 @@
   let toastTimer = null;
   let subBtnEl = null;
   let ttsBtnEl = null;
+  let floatingBarEl = null;
+  let playerContainerEl = null;
   let videoEl = null;
 
   // Audio ducking state
@@ -68,10 +73,51 @@
   }
 
   // =========================
-  // Helpers & Status
+  // Text Cleaning & Non-Speech Filtering
   // =========================
 
-  function getCurrentVideoId() {
+  const PAREN_SFX_RE =
+    /\(\s*(?:music|musik|applause|tepuk tangan|laughter|laughing|laughs|tawa|tertawa|cheering|cheers|sorak|sighs?|groans?|gasps?|coughs?|coughing|panting|chuckles?|giggles?|snickers?|sobs?|crying|screaming|yelling|whispers?|whispering|inaudible|unintelligible|silence|silent|static|beep|bleep|sfx|sound(?:s| effect)?|background\s*(?:music|noise|audio)|upbeat\s*music|soft\s*music|dramatic\s*music|instrumental|singing|humming|clapping|footsteps|door\s*\w+|phone\s*\w+|bell\s*\w+|foreign(?:\s*language)?)\s*\)/gi;
+
+  function decodeHtmlEntities(str) {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = str;
+    return textarea.value;
+  }
+
+  function stripNonSpeechAnnotations(raw) {
+    return String(raw || '')
+      // Strip WebVTT / HTML inline tags (<c>, <v Instructor>, <i>, <b>, <00:01:02.000>)
+      .replace(/<[^>]+>/g, ' ')
+      // Strip ALL square-bracket caption tags: [Music], [musik], [Applause], [Laughter], [♪], etc.
+      .replace(/\[[^\]]{1,60}\]/g, ' ')
+      // Strip parenthesized sound-effect descriptions: (music), (laughter), (applause), etc.
+      .replace(PAREN_SFX_RE, ' ')
+      // Strip musical note glyphs
+      .replace(/[♪♫♬♩🎵🎶]+/g, ' ')
+      // Strip speaker-change markers like >> or >>>
+      .replace(/(?:^|\s)>>+\s*/g, ' ')
+      // Normalize whitespace and punctuation spacing
+      .replace(/\r?\n+/g, ' ')
+      .replace(/\s+([,.;:!?])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  function cleanCaptionText(raw) {
+    const decoded = decodeHtmlEntities(String(raw || ''));
+    const cleaned = stripNonSpeechAnnotations(decoded);
+    // Drop pure punctuation / dashes with no spoken alphanumeric content
+    if (!/[\p{L}\p{N}]/u.test(cleaned)) return '';
+    return cleaned;
+  }
+
+  // =========================
+  // Site / Video Detection
+  // =========================
+
+  function getCurrentYouTubeVideoId() {
+    if (!isYouTubeHost) return '';
     try {
       const url = new URL(location.href);
       if (url.pathname === '/watch') return url.searchParams.get('v') || '';
@@ -85,17 +131,80 @@
     return '';
   }
 
-  function decodeHtmlEntities(str) {
-    const textarea = document.createElement('textarea');
-    textarea.innerHTML = str;
-    return textarea.value;
+  function findPrimaryVideo() {
+    if (isYouTubeHost) {
+      return (
+        document.querySelector('#movie_player video.html5-main-video') ||
+        document.querySelector('#shorts-player video') ||
+        document.querySelector('video')
+      );
+    }
+
+    const videos = Array.from(document.querySelectorAll('video'));
+    if (videos.length === 0) return null;
+
+    let best = null;
+    let bestScore = -1;
+    for (const v of videos) {
+      const rect = v.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      const visible = rect.width >= 180 && rect.height >= 100 && getComputedStyle(v).visibility !== 'hidden';
+      const hasMedia = Boolean(v.currentSrc || v.src || v.readyState >= 1 || (v.textTracks && v.textTracks.length > 0));
+      if (!visible && !hasMedia) continue;
+      const score = area + (v.paused ? 0 : 1e7) + (v.textTracks && v.textTracks.length > 0 ? 5e6 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = v;
+      }
+    }
+    return best;
   }
 
-  function cleanCaptionText(raw) {
-    return decodeHtmlEntities(String(raw || ''))
-      .replace(/\r?\n+/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
+  function findPlayerContainer(video) {
+    if (isYouTubeHost) {
+      return document.querySelector('#movie_player') || document.querySelector('#shorts-player') || video?.parentElement || null;
+    }
+
+    if (!video) return null;
+
+    if (document.fullscreenElement && document.fullscreenElement.contains(video)) {
+      return document.fullscreenElement;
+    }
+
+    const vRect = video.getBoundingClientRect();
+    let candidate = video.parentElement;
+    let best = video.parentElement;
+
+    for (let depth = 0; depth < 6 && candidate && candidate !== document.body && candidate !== document.documentElement; depth++) {
+      const cRect = candidate.getBoundingClientRect();
+      const pos = getComputedStyle(candidate).position;
+      const similarSize =
+        cRect.width >= vRect.width - 10 &&
+        cRect.height >= vRect.height - 10 &&
+        cRect.width <= vRect.width + 140 &&
+        cRect.height <= vRect.height + 140;
+
+      if (similarSize && (pos === 'relative' || pos === 'absolute' || pos === 'fixed')) {
+        best = candidate;
+      }
+      candidate = candidate.parentElement;
+    }
+
+    if (best && getComputedStyle(best).position === 'static') {
+      best.style.position = 'relative';
+    }
+    return best;
+  }
+
+  function computeMediaKey(video) {
+    if (isYouTubeHost) {
+      const vid = getCurrentYouTubeVideoId();
+      return vid ? `yt:${vid}` : '';
+    }
+    if (!video) return '';
+    const tracks = Array.from(video.querySelectorAll('track')).map((t) => t.src || '').join(',');
+    const srcKey = video.currentSrc || video.src || '';
+    return `web:${location.origin}${location.pathname}|${srcKey}|${tracks}`;
   }
 
   function showToast(text, duration = 2400) {
@@ -115,8 +224,93 @@
   }
 
   // =========================
-  // Cue Parsing & Merging
+  // Universal Cue Parsing (JSON3, WebVTT, SRT, XML/TTML)
   // =========================
+
+  function parseTimestampSec(str) {
+    const clean = String(str || '').trim().replace(',', '.');
+    if (!clean) return NaN;
+    if (/^\d+(?:\.\d+)?s?$/i.test(clean)) {
+      return parseFloat(clean);
+    }
+    const parts = clean.split(':').map(Number);
+    if (parts.some((n) => Number.isNaN(n))) return NaN;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return NaN;
+  }
+
+  function parseVttOrSrt(text) {
+    const lines = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const cues = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      if (!line || /^WEBVTT\b/i.test(line) || /^NOTE\b/i.test(line) || /^STYLE\b/i.test(line) || /^REGION\b/i.test(line)) {
+        // Skip header/metadata block until blank line
+        if (/^(NOTE|STYLE|REGION)\b/i.test(line)) {
+          while (i < lines.length && lines[i].trim() !== '') i++;
+        }
+        i++;
+        continue;
+      }
+
+      let timeLine = line;
+      if (!timeLine.includes('-->') && i + 1 < lines.length && lines[i + 1].includes('-->')) {
+        i++;
+        timeLine = lines[i].trim();
+      }
+
+      const match = timeLine.match(
+        /((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{2,3})\s*-->\s*((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{2,3})/
+      );
+      if (!match) {
+        i++;
+        continue;
+      }
+
+      const start = parseTimestampSec(match[1]);
+      const end = parseTimestampSec(match[2]);
+      i++;
+
+      const textLines = [];
+      while (i < lines.length && lines[i].trim() !== '') {
+        textLines.push(lines[i].trim());
+        i++;
+      }
+
+      const cleaned = cleanCaptionText(textLines.join(' '));
+      if (cleaned && Number.isFinite(start) && Number.isFinite(end)) {
+        cues.push({ start, end: Math.max(start + 0.4, end), en: cleaned });
+      }
+    }
+
+    return cues;
+  }
+
+  function finalizeCues(rawCues) {
+    if (!rawCues || rawCues.length === 0) return [];
+
+    rawCues.sort((a, b) => a.start - b.start);
+    const deduped = [];
+    for (const cue of rawCues) {
+      if (!cue.en) continue;
+      const prev = deduped[deduped.length - 1];
+      if (prev) {
+        if (prev.en === cue.en && Math.abs(cue.start - prev.start) < 1.5) {
+          prev.end = Math.max(prev.end, cue.end);
+          continue;
+        }
+        if (prev.end > cue.start) {
+          prev.end = Math.max(prev.start + 0.35, cue.start);
+        }
+      }
+      deduped.push({ ...cue });
+    }
+
+    return mergeShortCues(deduped);
+  }
 
   function parseTimedText(body) {
     const trimmed = (body || '').trim();
@@ -125,6 +319,7 @@
     let rawCues = [];
 
     if (trimmed.startsWith('{')) {
+      // 1. YouTube JSON3
       try {
         const json = JSON.parse(trimmed);
         const events = Array.isArray(json.events) ? json.events : [];
@@ -139,7 +334,11 @@
       } catch {
         return [];
       }
+    } else if (/^WEBVTT\b/i.test(trimmed) || /\d{1,2}:\d{2}[.,]\d{2,3}\s*-->/.test(trimmed)) {
+      // 2. WebVTT / SubRip SRT (Udemy, Coursera, Vimeo, edX, Pluralsight, HTML5)
+      rawCues = parseVttOrSrt(trimmed);
     } else if (trimmed.startsWith('<')) {
+      // 3. XML / SRV3 / TTML
       try {
         const doc = new DOMParser().parseFromString(trimmed, 'text/xml');
         const textNodes = doc.querySelectorAll('text');
@@ -156,9 +355,19 @@
           pNodes.forEach((node) => {
             const text = cleanCaptionText(node.textContent || '');
             if (!text) return;
-            const start = (parseFloat(node.getAttribute('t') || '0') || 0) / 1000;
-            const dur = (parseFloat(node.getAttribute('d') || '2500') || 2500) / 1000;
-            rawCues.push({ start, end: start + Math.max(0.4, dur), en: text });
+            const beginAttr = node.getAttribute('begin');
+            const endAttr = node.getAttribute('end');
+            if (beginAttr) {
+              const start = parseTimestampSec(beginAttr);
+              const end = endAttr ? parseTimestampSec(endAttr) : start + 2.5;
+              if (Number.isFinite(start)) {
+                rawCues.push({ start, end: Math.max(start + 0.4, Number.isFinite(end) ? end : start + 2.5), en: text });
+              }
+            } else {
+              const start = (parseFloat(node.getAttribute('t') || '0') || 0) / 1000;
+              const dur = (parseFloat(node.getAttribute('d') || '2500') || 2500) / 1000;
+              rawCues.push({ start, end: start + Math.max(0.4, dur), en: text });
+            }
           });
         }
       } catch {
@@ -166,25 +375,7 @@
       }
     }
 
-    if (rawCues.length === 0) return [];
-
-    rawCues.sort((a, b) => a.start - b.start);
-    const deduped = [];
-    for (const cue of rawCues) {
-      const prev = deduped[deduped.length - 1];
-      if (prev) {
-        if (prev.en === cue.en && Math.abs(cue.start - prev.start) < 1.5) {
-          prev.end = Math.max(prev.end, cue.end);
-          continue;
-        }
-        if (prev.end > cue.start) {
-          prev.end = Math.max(prev.start + 0.35, cue.start);
-        }
-      }
-      deduped.push({ ...cue });
-    }
-
-    return mergeShortCues(deduped);
+    return finalizeCues(rawCues);
   }
 
   function mergeShortCues(cues) {
@@ -209,7 +400,6 @@
       const combinedDur = cue.end - current.start;
       const endsSentence = /[.?!]["')\]]?$/.test(current.en);
 
-      // Keep cues compact (~95 chars / ~4.4s) so TTS fits in a single chunk and syncs tightly
       if (!endsSentence && gap <= 0.6 && combinedLen <= 95 && combinedDur <= 4.4) {
         current.en = `${current.en} ${cue.en}`;
         current.end = cue.end;
@@ -228,6 +418,125 @@
 
     if (current) merged.push(current);
     return merged;
+  }
+
+  // =========================
+  // HTML5 TextTrack & <track> Extraction (Udemy, Coursera, Vimeo, etc.)
+  // =========================
+
+  function pickBestHtmlTrack(tracks) {
+    const list = Array.from(tracks || []).filter(
+      (t) => !t.kind || t.kind === 'subtitles' || t.kind === 'captions'
+    );
+    if (list.length === 0) return null;
+
+    const isEn = (t) => {
+      const lang = (t.language || t.srclang || '').toLowerCase();
+      const label = (t.label || '').toLowerCase();
+      return lang.startsWith('en') || label.includes('english') || label.includes('inggris');
+    };
+
+    return list.find((t) => isEn(t) && t.mode === 'showing') || list.find(isEn) || list.find((t) => t.mode === 'showing') || list[0];
+  }
+
+  function loadCuesIntoState(parsed, sourceLang = 'en', alreadyIndonesian = false) {
+    if (!parsed || parsed.length === 0) return false;
+
+    stopDomFallback();
+    state.sourceLang = (sourceLang || 'en').split(/[-_]/)[0] || 'en';
+    state.cues = parsed;
+    state.activeCueIndex = -1;
+    state.translatedCount = 0;
+
+    if (alreadyIndonesian || state.sourceLang === 'id') {
+      for (const cue of state.cues) {
+        cue.idText = cue.en;
+      }
+      state.translatedCount = state.cues.length;
+      setStatus('ready', `${state.cues.length} baris subtitle Indonesia siap`);
+      applySettingsUI();
+      updateActiveCue(true);
+      return true;
+    }
+
+    setStatus('loading', `Menerjemahkan ${state.cues.length} baris ke Indonesia...`);
+    applySettingsUI();
+    runProgressiveTranslation(state.runToken);
+    return true;
+  }
+
+  function fetchSubtitleUrlBg(url) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'FETCH_SUBTITLE_URL', url }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok || !resp.body) {
+          resolve('');
+          return;
+        }
+        resolve(resp.body);
+      });
+    });
+  }
+
+  async function tryExtractGenericVideoTracks(video, token) {
+    if (!video || token !== state.runToken || state.cues.length > 0) return false;
+
+    // 1. Check <track src="..."> DOM elements first (fetches full VTT via background.js, bypasses CORS)
+    const trackEls = Array.from(video.querySelectorAll('track[src]'));
+    if (trackEls.length > 0) {
+      const bestEl = pickBestHtmlTrack(trackEls);
+      if (bestEl && bestEl.src) {
+        const body = await fetchSubtitleUrlBg(bestEl.src);
+        if (token !== state.runToken || state.cues.length > 0) return true;
+        const parsed = parseTimedText(body);
+        if (parsed.length > 0) {
+          return loadCuesIntoState(parsed, bestEl.srclang || 'en', false);
+        }
+      }
+    }
+
+    // 2. Check HTML5 video.textTracks API directly
+    if (video.textTracks && video.textTracks.length > 0) {
+      const bestTrack = pickBestHtmlTrack(video.textTracks);
+      if (bestTrack) {
+        const readCues = () => {
+          if (token !== state.runToken || state.cues.length > 0) return false;
+          const cueList = bestTrack.cues;
+          if (!cueList || cueList.length === 0) return false;
+          const raw = [];
+          for (let i = 0; i < cueList.length; i++) {
+            const c = cueList[i];
+            const cleaned = cleanCaptionText(c.text || '');
+            if (!cleaned) continue;
+            raw.push({
+              start: Number(c.startTime) || 0,
+              end: Math.max((Number(c.startTime) || 0) + 0.4, Number(c.endTime) || 0),
+              en: cleaned
+            });
+          }
+          const parsed = finalizeCues(raw);
+          if (parsed.length > 0) {
+            return loadCuesIntoState(parsed, bestTrack.language || 'en', false);
+          }
+          return false;
+        };
+
+        if (bestTrack.mode === 'disabled') {
+          try {
+            bestTrack.mode = 'hidden';
+          } catch {
+            // ignore
+          }
+        }
+
+        if (readCues()) return true;
+
+        // Wait briefly for browser to load VTT cues into TextTrack
+        await new Promise((r) => setTimeout(r, 800));
+        if (readCues()) return true;
+      }
+    }
+
+    return false;
   }
 
   // =========================
@@ -279,7 +588,7 @@
       if (!cue) continue;
       cue.translating = false;
       if (translations && translations[j]) {
-        cue.idText = translations[j];
+        cue.idText = cleanCaptionText(translations[j]) || translations[j];
         state.translatedCount++;
       }
     }
@@ -344,6 +653,19 @@
       this.dryGain = null;
       this.wetGain = null;
       this.active = false;
+      this.corsWarned = false;
+    }
+
+    isCorsSafe(video) {
+      if (!video) return false;
+      const src = video.currentSrc || video.src || '';
+      if (!src || src.startsWith('blob:') || src.startsWith('data:')) return true;
+      if (video.crossOrigin) return true;
+      try {
+        return new URL(src, location.href).origin === location.origin;
+      } catch {
+        return false;
+      }
     }
 
     ensureAttached(video) {
@@ -352,7 +674,6 @@
         return true;
       }
 
-      // Reuse graph if already attached to this exact video element
       if (video.__ytIndoSubVocalGraph) {
         const g = video.__ytIndoSubVocalGraph;
         this.attachedVideo = video;
@@ -362,6 +683,15 @@
         return true;
       }
 
+      // Guard against muting direct cross-origin MP4 videos without CORS headers
+      if (!this.isCorsSafe(video)) {
+        if (!this.corsWarned) {
+          this.corsWarned = true;
+          showToast('Penghilang vokal tidak didukung oleh CORS video di situs ini', 3200);
+        }
+        return false;
+      }
+
       try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return false;
@@ -369,16 +699,12 @@
         const ctx = new AudioCtx();
         const source = ctx.createMediaElementSource(video);
 
-        // Dry path (bit-identical original audio when Vocal Remover is OFF)
         const dryGain = ctx.createGain();
         dryGain.gain.value = 1.0;
 
-        // Wet path: 3-Band Mid/Side vocal cancellation
-        // Center vocals sit in Mid (155 Hz - 6800 Hz); stereo music & SFX sit in Side (L - R) + low bass
         const splitter = ctx.createChannelSplitter(2);
         const merger = ctx.createChannelMerger(2);
 
-        // Side channel: S = 0.5 * (L - R) — zero center vocal, pure stereo BGM/SFX/ambience
         const sideBus = ctx.createGain();
         const sideLGain = ctx.createGain();
         const sideRGain = ctx.createGain();
@@ -389,7 +715,6 @@
         sideLGain.connect(sideBus);
         sideRGain.connect(sideBus);
 
-        // Reconstruct full stereo width from Side (+S to L, -S to R)
         const sidePosGain = ctx.createGain();
         const sideNegGain = ctx.createGain();
         sidePosGain.gain.value = 1.35;
@@ -399,7 +724,6 @@
         sidePosGain.connect(merger, 0, 0);
         sideNegGain.connect(merger, 0, 1);
 
-        // Mid channel: M = 0.5 * (L + R) — strip 155 Hz..6800 Hz vocal band, keep low bass & crisp air
         const midBus = ctx.createGain();
         const midLGain = ctx.createGain();
         const midRGain = ctx.createGain();
@@ -410,7 +734,6 @@
         midLGain.connect(midBus);
         midRGain.connect(midBus);
 
-        // Preserve punchy low bass (< 155 Hz)
         const lowPass = ctx.createBiquadFilter();
         lowPass.type = 'lowpass';
         lowPass.frequency.value = 155;
@@ -420,7 +743,6 @@
         midBus.connect(lowPass);
         lowPass.connect(lowGain);
 
-        // Preserve subtle high air (> 6800 Hz) for SFX sparkle without vocal sibilance
         const highPass = ctx.createBiquadFilter();
         highPass.type = 'highpass';
         highPass.frequency.value = 6800;
@@ -435,7 +757,6 @@
         highGain.connect(merger, 0, 0);
         highGain.connect(merger, 0, 1);
 
-        // Soft limiter to prevent clipping on loud BGM
         const limiter = ctx.createDynamicsCompressor();
         limiter.threshold.value = -3;
         limiter.knee.value = 12;
@@ -472,15 +793,17 @@
     }
 
     setEnabled(video, enable) {
-      if (!video) return;
+      if (!video) return false;
 
-      // Lazy attach: only create AudioContext once user enables Vocal Remover
       if (!enable && !this.ctx && !video.__ytIndoSubVocalGraph) {
         this.active = false;
-        return;
+        return false;
       }
 
-      if (!this.ensureAttached(video)) return;
+      if (!this.ensureAttached(video)) {
+        this.active = false;
+        return false;
+      }
       this.resumeIfNeeded();
 
       const now = this.ctx.currentTime;
@@ -492,6 +815,7 @@
       this.dryGain.gain.setTargetAtTime(targetDry, now, 0.05);
       this.wetGain.gain.setTargetAtTime(targetWet, now, 0.05);
       this.active = Boolean(enable);
+      return this.active;
     }
   }
 
@@ -504,11 +828,10 @@
   function applyAudioDucking() {
     if (!videoEl) return;
 
-    const useVocalRemover = Boolean(settings.enabled && settings.vocalRemoveEnabled);
-    vocalRemover.setEnabled(videoEl, useVocalRemover);
+    const wantVocalRemover = Boolean(settings.enabled && settings.vocalRemoveEnabled);
+    const vocalActive = vocalRemover.setEnabled(videoEl, wantVocalRemover);
 
-    // When Vocal Remover is ON, keep original BGM/SFX audible (don't duck the whole video to 15%)
-    const shouldDuck = Boolean(settings.enabled && settings.ttsEnabled && !videoEl.paused && !useVocalRemover);
+    const shouldDuck = Boolean(settings.enabled && settings.ttsEnabled && !videoEl.paused && !vocalActive);
 
     if (shouldDuck) {
       if (!isDucking) {
@@ -542,8 +865,7 @@
       this.pendingGraceKey = '';
       this.autoplayNoticeShown = false;
 
-      // Adaptive speed detection state
-      this.paceEma = 1.1; // rolling detected pace multiplier
+      this.paceEma = 1.1;
       this.lastAppliedRate = 1.1;
       this.lastPaceLabel = 'Normal';
       this.isPlayingAudio = false;
@@ -595,30 +917,22 @@
       }
 
       const safeRemaining = Math.max(0.45, remainingWallSec);
-
-      // Estimate duration if exact audio duration isn't available (e.g., Browser TTS)
       const effectiveDur =
         audioDurationSec && Number.isFinite(audioDurationSec) && audioDurationSec > 0.1
           ? audioDurationSec
           : Math.max(0.6, (textLength || 20) / 13.5);
 
-      // Required rate with 6% safety margin so speech ends right before next subtitle
       const exactNeeded = (effectiveDur / safeRemaining) * 1.06;
-
-      // Update rolling speaker pace EMA so transitions between cues stay smooth
       const clampedObserved = Math.max(0.95, Math.min(2.35, exactNeeded));
       this.paceEma = this.paceEma * 0.65 + clampedObserved * 0.35;
 
-      // Never fall behind exactNeeded when fast; when slow, relax gently toward baseRate & EMA
       let chosenRate;
       if (exactNeeded > manualRate) {
         chosenRate = Math.max(exactNeeded, this.paceEma * 0.95);
       } else {
-        // Gentle blend between user base rate and speaker pace so slow cues don't sound jarring
         chosenRate = Math.max(manualRate * 0.92, Math.min(manualRate * 1.1, (manualRate + this.paceEma) * 0.5));
       }
 
-      // Hard natural intelligibility bounds (pitch-preserved up to 2.35x)
       chosenRate = Math.max(0.85, Math.min(2.35, chosenRate));
 
       this.lastAppliedRate = chosenRate;
@@ -635,7 +949,6 @@
       this.isPlayingAudio = false;
       if (this.audioEl) {
         try {
-          // Detach listeners BEFORE pausing so abort events never leak into the next playback
           this.audioEl.onended = null;
           this.audioEl.onerror = null;
           this.audioEl.onloadedmetadata = null;
@@ -671,7 +984,7 @@
     }
 
     fetchOnlineAudio(text, isPrefetch = false) {
-      const clean = (text || '').trim();
+      const clean = cleanCaptionText(text);
       if (!clean) return Promise.resolve([]);
       const voice = settings.ttsVoice || 'google:id';
       const cacheKey = `${voice}:${clean}`;
@@ -682,11 +995,7 @@
       if (this.inflightFetches.has(cacheKey)) {
         const shared = this.inflightFetches.get(cacheKey);
         if (isPrefetch) return shared;
-        // For active cue: don't wait longer than 2.2s on a slow prefetch; let caller fall back immediately
-        return Promise.race([
-          shared,
-          new Promise((resolve) => setTimeout(() => resolve([]), 2200))
-        ]);
+        return Promise.race([shared, new Promise((resolve) => setTimeout(() => resolve([]), 2200))]);
       }
 
       const promise = new Promise((resolve) => {
@@ -715,7 +1024,6 @@
     prefetchAhead(currentIdx) {
       if (this.isBrowserVoice() || !settings.ttsEnabled) return;
       const voice = settings.ttsVoice || 'google:id';
-      // TikTok voices have ~3s network latency, so warm 7 cues (~20s) ahead to guarantee 0ms playback!
       const lookahead = voice.startsWith('tiktok:') ? 7 : 4;
       for (let offset = 1; offset <= lookahead; offset++) {
         const nextCue = state.cues[currentIdx + offset];
@@ -725,17 +1033,11 @@
       }
     }
 
-    /**
-     * Speak text with real-time deadline awareness.
-     * windowEndVideoSec: video timestamp when next cue starts (null for DOM fallback).
-     * fallbackWallSec: fallback speaking window if windowEndVideoSec is null.
-     */
     async speak(text, cueKey, windowEndVideoSec = null, fallbackWallSec = 3.5) {
-      const clean = (text || '').trim();
+      const clean = cleanCaptionText(text);
       if (!clean) return;
       if (this.lastSpokenKey === cueKey || this.pendingGraceKey === cueKey) return;
 
-      // Gentle anti-cutoff grace: if previous line has <= 0.35s left, let its last syllable finish
       const prevLeft = this.getRemainingAudioSec();
       if (settings.autoTtsSpeed && prevLeft > 0.04 && prevLeft <= 0.35 && !this.isBrowserVoice()) {
         clearTimeout(this.graceTimer);
@@ -779,7 +1081,6 @@
       if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
       if (videoEl && videoEl.paused) return;
 
-      // If shared prefetch promise failed/timed out, retry immediately with fast Google TTS fallback
       if (!audioUrls || audioUrls.length === 0) {
         audioUrls = await new Promise((resolve) => {
           chrome.runtime.sendMessage(
@@ -828,7 +1129,6 @@
 
     playAudioUrl(dataUrl, token, chunkTargetSec, chunkChars) {
       return new Promise((resolve) => {
-        // Fresh Audio instance per chunk prevents stale abort/error events from previous clips
         const audio = new Audio();
         audio.preload = 'auto';
         this.enablePitchPreservation(audio);
@@ -918,10 +1218,15 @@
   // =========================
 
   function ensureOverlay() {
-    const player = document.querySelector('#movie_player');
-    if (!player) return false;
+    const container = findPlayerContainer(videoEl);
+    if (!container) return false;
 
-    if (!overlayEl || !player.contains(overlayEl)) {
+    if (playerContainerEl && playerContainerEl !== container) {
+      playerContainerEl.classList.remove('yt-indosub-hide-native');
+    }
+    playerContainerEl = container;
+
+    if (!overlayEl || !container.contains(overlayEl)) {
       overlayEl = document.createElement('div');
       overlayEl.id = 'yt-indosub-overlay';
       overlayEl.className = 'yt-indosub-hidden';
@@ -934,64 +1239,99 @@
 
       overlayEl.appendChild(enLineEl);
       overlayEl.appendChild(idLineEl);
-      player.appendChild(overlayEl);
+      container.appendChild(overlayEl);
     }
 
-    if (!toastEl || !player.contains(toastEl)) {
+    if (!toastEl || !container.contains(toastEl)) {
       toastEl = document.createElement('div');
       toastEl.id = 'yt-indosub-toast';
-      player.appendChild(toastEl);
+      container.appendChild(toastEl);
     }
 
     applySettingsUI();
     return true;
   }
 
-  function ensurePlayerButtons() {
-    const rightControls = document.querySelector('#movie_player .ytp-right-controls');
-    if (!rightControls) return;
-
-    if (!subBtnEl || !rightControls.contains(subBtnEl)) {
-      subBtnEl = document.createElement('button');
-      subBtnEl.type = 'button';
-      subBtnEl.className = 'ytp-button yt-indosub-player-btn';
-      subBtnEl.title = 'Toggle Subtitle Indonesia (YT IndoSub)';
-      subBtnEl.innerHTML = '<span class="yt-indosub-pill">ID</span>';
-      subBtnEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const next = !settings.enabled;
-        saveSettingsPatch({ enabled: next });
-        showToast(next ? 'Subtitle Indonesia: AKTIF' : 'Subtitle Indonesia: NONAKTIF');
-        if (!next) {
-          ttsEngine.stop();
-          applyAudioDucking();
-        } else {
-          updateActiveCue(true);
-        }
-      });
-      rightControls.prepend(subBtnEl);
-    }
-
-    if (!ttsBtnEl || !rightControls.contains(ttsBtnEl)) {
-      ttsBtnEl = document.createElement('button');
-      ttsBtnEl.type = 'button';
-      ttsBtnEl.className = 'ytp-button yt-indosub-player-btn';
-      ttsBtnEl.title = 'Toggle Suara Dubbing Indonesia (TTS)';
-      ttsBtnEl.innerHTML = '<span class="yt-indosub-pill">TTS</span>';
-      ttsBtnEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const next = !settings.ttsEnabled;
-        saveSettingsPatch({ ttsEnabled: next, enabled: next ? true : settings.enabled });
-        showToast(next ? 'Dubbing Suara Indonesia: AKTIF' : 'Dubbing Suara Indonesia: NONAKTIF');
-        if (!next) {
-          ttsEngine.stop();
-        } else {
-          ttsEngine.lastSpokenKey = '';
-          updateActiveCue(true);
-        }
+  function makeToggleHandlers() {
+    const onSubClick = (e) => {
+      e.stopPropagation();
+      const next = !settings.enabled;
+      saveSettingsPatch({ enabled: next });
+      showToast(next ? 'Subtitle Indonesia: AKTIF' : 'Subtitle Indonesia: NONAKTIF');
+      if (!next) {
+        ttsEngine.stop();
         applyAudioDucking();
-      });
-      rightControls.prepend(ttsBtnEl);
+      } else {
+        updateActiveCue(true);
+      }
+    };
+
+    const onTtsClick = (e) => {
+      e.stopPropagation();
+      const next = !settings.ttsEnabled;
+      saveSettingsPatch({ ttsEnabled: next, enabled: next ? true : settings.enabled });
+      showToast(next ? 'Dubbing Suara Indonesia: AKTIF' : 'Dubbing Suara Indonesia: NONAKTIF');
+      if (!next) {
+        ttsEngine.stop();
+      } else {
+        ttsEngine.lastSpokenKey = '';
+        updateActiveCue(true);
+      }
+      applyAudioDucking();
+    };
+
+    return { onSubClick, onTtsClick };
+  }
+
+  function ensurePlayerButtons() {
+    const { onSubClick, onTtsClick } = makeToggleHandlers();
+
+    if (isYouTubeHost) {
+      const rightControls = document.querySelector('#movie_player .ytp-right-controls');
+      if (!rightControls) return;
+
+      if (!subBtnEl || !rightControls.contains(subBtnEl)) {
+        subBtnEl = document.createElement('button');
+        subBtnEl.type = 'button';
+        subBtnEl.className = 'ytp-button yt-indosub-player-btn';
+        subBtnEl.title = 'Toggle Subtitle Indonesia (IndoSub)';
+        subBtnEl.innerHTML = '<span class="yt-indosub-pill">ID</span>';
+        subBtnEl.addEventListener('click', onSubClick);
+        rightControls.prepend(subBtnEl);
+      }
+
+      if (!ttsBtnEl || !rightControls.contains(ttsBtnEl)) {
+        ttsBtnEl = document.createElement('button');
+        ttsBtnEl.type = 'button';
+        ttsBtnEl.className = 'ytp-button yt-indosub-player-btn';
+        ttsBtnEl.title = 'Toggle Suara Dubbing Indonesia (TTS)';
+        ttsBtnEl.innerHTML = '<span class="yt-indosub-pill">TTS</span>';
+        ttsBtnEl.addEventListener('click', onTtsClick);
+        rightControls.prepend(ttsBtnEl);
+      }
+    } else if (playerContainerEl) {
+      if (!floatingBarEl || !playerContainerEl.contains(floatingBarEl)) {
+        floatingBarEl = document.createElement('div');
+        floatingBarEl.id = 'yt-indosub-floating-controls';
+
+        subBtnEl = document.createElement('button');
+        subBtnEl.type = 'button';
+        subBtnEl.className = 'yt-indosub-float-btn';
+        subBtnEl.title = 'Toggle Subtitle Indonesia (IndoSub)';
+        subBtnEl.innerHTML = '<span class="yt-indosub-pill">ID</span>';
+        subBtnEl.addEventListener('click', onSubClick);
+
+        ttsBtnEl = document.createElement('button');
+        ttsBtnEl.type = 'button';
+        ttsBtnEl.className = 'yt-indosub-float-btn';
+        ttsBtnEl.title = 'Toggle Suara Dubbing Indonesia (TTS)';
+        ttsBtnEl.innerHTML = '<span class="yt-indosub-pill">TTS</span>';
+        ttsBtnEl.addEventListener('click', onTtsClick);
+
+        floatingBarEl.appendChild(subBtnEl);
+        floatingBarEl.appendChild(ttsBtnEl);
+        playerContainerEl.appendChild(floatingBarEl);
+      }
     }
 
     updatePlayerButtonStates();
@@ -1014,10 +1354,9 @@
   }
 
   function applySettingsUI() {
-    const player = document.querySelector('#movie_player');
-    if (player) {
+    if (playerContainerEl) {
       const hideNative = Boolean(settings.enabled && (state.cues.length > 0 || state.domFallbackActive));
-      player.classList.toggle('yt-indosub-hide-native', hideNative);
+      playerContainerEl.classList.toggle('yt-indosub-hide-native', hideNative);
     }
 
     if (overlayEl) {
@@ -1096,47 +1435,68 @@
 
     if (settings.ttsEnabled && !videoEl.paused && cue.idText) {
       const nextCue = state.cues[idx + 1];
-      // Allow TTS to naturally use any silent gap before next cue, but finish cleanly before next cue starts
       const windowEndVideoSec = nextCue ? Math.max(cue.end, nextCue.start - 0.06) : cue.end + 0.8;
-      ttsEngine.speak(cue.idText, `${state.videoId}:${idx}`, windowEndVideoSec, Math.max(0.8, cue.end - now));
+      ttsEngine.speak(cue.idText, `${state.mediaKey}:${idx}`, windowEndVideoSec, Math.max(0.8, cue.end - now));
       ttsEngine.prefetchAhead(idx);
     }
   }
 
-  function bindVideoElement() {
-    const found = document.querySelector('#movie_player video.html5-main-video') || document.querySelector('video');
+  function bindVideoElement(found) {
     if (!found || found === videoEl) return;
 
     videoEl = found;
 
-    videoEl.addEventListener('timeupdate', () => updateActiveCue(false));
-    videoEl.addEventListener('seeking', () => {
-      ttsEngine.stop();
-      ttsEngine.lastSpokenKey = '';
-    });
-    videoEl.addEventListener('seeked', () => {
-      updateActiveCue(true);
-    });
-    videoEl.addEventListener('pause', () => {
-      ttsEngine.stop();
-      applyAudioDucking();
-    });
-    videoEl.addEventListener('play', () => {
-      vocalRemover.resumeIfNeeded();
-      applyAudioDucking();
-      ttsEngine.lastSpokenKey = '';
-      updateActiveCue(true);
-    });
-    videoEl.addEventListener('volumechange', () => {
-      if (!isDucking && videoEl) {
-        savedVideoVolume = videoEl.volume;
-      }
-    });
+    if (!videoEl.__ytIndoSubListenersBound) {
+      videoEl.__ytIndoSubListenersBound = true;
+      videoEl.addEventListener('timeupdate', () => updateActiveCue(false));
+      videoEl.addEventListener('seeking', () => {
+        ttsEngine.stop();
+        ttsEngine.lastSpokenKey = '';
+      });
+      videoEl.addEventListener('seeked', () => {
+        updateActiveCue(true);
+      });
+      videoEl.addEventListener('pause', () => {
+        ttsEngine.stop();
+        applyAudioDucking();
+      });
+      videoEl.addEventListener('play', () => {
+        vocalRemover.resumeIfNeeded();
+        applyAudioDucking();
+        ttsEngine.lastSpokenKey = '';
+        updateActiveCue(true);
+      });
+      videoEl.addEventListener('volumechange', () => {
+        if (!isDucking && videoEl) {
+          savedVideoVolume = videoEl.volume;
+        }
+      });
+    }
   }
 
   // =========================
-  // Live DOM Fallback (for streams / edge cases)
+  // Universal Live DOM Fallback (YouTube, Udemy, Coursera, Netflix, Video.js, etc.)
   // =========================
+
+  const LIVE_CAPTION_SELECTORS = [
+    '#movie_player .ytp-caption-segment',
+    '[data-purpose="captions-cue-text"]',
+    '.vjs-text-track-cue',
+    '.player-timedtext-text-container',
+    '.plyr__captions',
+    '.jw-text-track-cue',
+    '.shaka-text-container'
+  ];
+
+  const LIVE_CONTAINER_SELECTORS = [
+    '#movie_player .ytp-caption-window-container',
+    '[class*="captions-display--captions-container"]',
+    '.vjs-text-track-display',
+    '.player-timedtext',
+    '.plyr__captions',
+    '.jw-captions',
+    '.shaka-text-container'
+  ];
 
   function stopDomFallback() {
     if (state.domFallbackObserver) {
@@ -1150,7 +1510,12 @@
 
   function startDomFallback(token) {
     stopDomFallback();
-    const container = document.querySelector('#movie_player .ytp-caption-window-container');
+    const root = playerContainerEl || document;
+    let container = null;
+    for (const sel of LIVE_CONTAINER_SELECTORS) {
+      container = root.querySelector(sel) || document.querySelector(sel);
+      if (container) break;
+    }
     if (!container) return;
 
     state.domFallbackActive = true;
@@ -1161,8 +1526,19 @@
       if (token !== state.runToken || state.cues.length > 0 || !settings.enabled) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
-        const segments = Array.from(container.querySelectorAll('.ytp-caption-segment'));
-        const text = cleanCaptionText(segments.map((s) => s.textContent || '').join(' '));
+        let rawText = '';
+        for (const sel of LIVE_CAPTION_SELECTORS) {
+          const nodes = container.querySelectorAll(sel);
+          if (nodes.length > 0) {
+            rawText = Array.from(nodes)
+              .map((n) => n.textContent || '')
+              .join(' ');
+            break;
+          }
+        }
+        if (!rawText) rawText = container.textContent || '';
+
+        const text = cleanCaptionText(rawText);
         if (!text || text === state.lastDomText) return;
 
         const nowMs = Date.now();
@@ -1170,12 +1546,12 @@
         state.lastDomText = text;
         state.lastDomSpokenAt = nowMs;
 
-        setStatus('ready', 'Mode live caption aktif');
+        setStatus('ready', `Mode live caption (${state.siteName})`);
         applySettingsUI();
 
         const res = await translateBatchBg([text], 'auto');
         if (token !== state.runToken) return;
-        const translated = res && res[0] ? res[0] : text;
+        const translated = cleanCaptionText((res && res[0]) || text) || text;
         renderSubtitleText(text, translated);
         if (settings.ttsEnabled && videoEl && !videoEl.paused) {
           ttsEngine.speak(translated, `dom:${nowMs}:${translated}`, null, elapsedSec);
@@ -1194,12 +1570,13 @@
   // Video Lifecycle & Bridge
   // =========================
 
-  function requestCaptionsForVideo(videoId, forceReload = false) {
-    if (!videoId) return;
+  async function requestCaptionsForCurrentMedia(mediaKey, forceReload = false) {
+    if (!mediaKey) return;
 
     state.runToken++;
     const token = state.runToken;
-    state.videoId = videoId;
+    state.mediaKey = mediaKey;
+    state.videoId = isYouTubeHost ? getCurrentYouTubeVideoId() : '';
     state.cues = [];
     state.activeCueIndex = -1;
     state.translatedCount = 0;
@@ -1209,73 +1586,89 @@
     renderSubtitleText('', '');
     applySettingsUI();
 
-    setStatus('loading', 'Mencari subtitle video...');
+    setStatus('loading', `Mencari subtitle (${state.siteName})...`);
+
+    if (!isYouTubeHost && videoEl) {
+      const okFromTrack = await tryExtractGenericVideoTracks(videoEl, token);
+      if (okFromTrack || token !== state.runToken) return;
+    }
 
     window.postMessage(
       {
         source: CONTENT_SRC,
         type: 'REQUEST_CAPTIONS',
-        videoId,
+        videoId: state.videoId,
         forceReload
       },
       '*'
     );
 
-    // Fallback to live DOM observer if timedtext hasn't arrived after 4s
-    setTimeout(() => {
-      if (token === state.runToken && state.cues.length === 0 && state.status !== 'no_captions') {
-        startDomFallback(token);
+    setTimeout(async () => {
+      if (token !== state.runToken || state.cues.length > 0 || state.status === 'no_captions') return;
+      if (!isYouTubeHost && videoEl) {
+        const retryOk = await tryExtractGenericVideoTracks(videoEl, token);
+        if (retryOk) return;
       }
-    }, 4000);
+      startDomFallback(token);
+      if (!isYouTubeHost && !state.domFallbackActive && state.cues.length === 0) {
+        setStatus('no_captions', `Aktifkan CC di player ${state.siteName} lalu klik Muat Ulang`);
+      }
+    }, 3500);
   }
 
-  window.addEventListener('message', (event) => {
+  window.addEventListener('message', async (event) => {
     if (event.source !== window || !event.data || event.data.source !== BRIDGE_SRC) return;
 
-    const { type, payload, videoId, track } = event.data;
+    const { type, payload, videoId, track, urls } = event.data;
 
-    if (type === 'TRACK_FOUND' && videoId === state.videoId) {
+    if (type === 'TRACK_FOUND' && isYouTubeHost && videoId === state.videoId) {
       state.sourceLang = track?.languageCode || 'en';
       setStatus('loading', `Subtitle ditemukan (${track?.name || state.sourceLang}), memuat...`);
       return;
     }
 
-    if (type === 'NO_CAPTIONS' && videoId === state.videoId) {
+    if (type === 'NO_CAPTIONS' && isYouTubeHost && videoId === state.videoId) {
       setStatus('no_captions', 'Video ini tidak memiliki subtitle/caption di YouTube');
       applySettingsUI();
       return;
     }
 
-    if (type === 'TIMEDTEXT_CAPTURED' && payload) {
-      const currentId = getCurrentVideoId();
-      if (!currentId || payload.videoId !== currentId) return;
-
-      if (state.videoId === currentId && state.cues.length > 0 && payload.tlang) return;
-
-      const parsed = parseTimedText(payload.body);
-      if (parsed.length === 0) return;
-
-      stopDomFallback();
-      state.videoId = currentId;
-      state.sourceLang = (payload.lang || 'en').split('-')[0] || 'en';
-      state.cues = parsed;
-      state.activeCueIndex = -1;
-      state.translatedCount = 0;
-
-      if (payload.tlang === 'id' || state.sourceLang === 'id') {
-        for (const cue of state.cues) {
-          cue.idText = cue.en;
+    if (type === 'GENERIC_SUB_URLS' && !isYouTubeHost && Array.isArray(urls) && state.cues.length === 0) {
+      const token = state.runToken;
+      for (const item of urls) {
+        const body = await fetchSubtitleUrlBg(item.url);
+        if (token !== state.runToken || state.cues.length > 0) return;
+        const parsed = parseTimedText(body);
+        if (parsed.length > 0) {
+          loadCuesIntoState(parsed, item.lang || 'en', false);
+          return;
         }
-        state.translatedCount = state.cues.length;
-        setStatus('ready', `${state.cues.length} baris subtitle Indonesia siap`);
-        applySettingsUI();
-        updateActiveCue(true);
-        return;
       }
+      return;
+    }
 
-      setStatus('loading', `Menerjemahkan ${state.cues.length} baris ke Indonesia...`);
-      applySettingsUI();
-      runProgressiveTranslation(state.runToken);
+    if (type === 'TIMEDTEXT_CAPTURED' && payload) {
+      if (isYouTubeHost) {
+        const currentId = getCurrentYouTubeVideoId();
+        if (!currentId || payload.videoId !== currentId) return;
+        if (state.videoId === currentId && state.cues.length > 0 && payload.tlang) return;
+
+        const parsed = parseTimedText(payload.body);
+        if (parsed.length === 0) return;
+        state.videoId = currentId;
+        loadCuesIntoState(parsed, payload.lang || 'en', payload.tlang === 'id');
+      } else {
+        if (!videoEl) {
+          const found = findPrimaryVideo();
+          if (found) bindVideoElement(found);
+        }
+        if (!videoEl) return;
+        const parsed = parseTimedText(payload.body);
+        if (parsed.length === 0) return;
+        ensureOverlay();
+        ensurePlayerButtons();
+        loadCuesIntoState(parsed, payload.lang || 'auto', false);
+      }
     }
   });
 
@@ -1283,9 +1676,17 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || !msg.type) return false;
 
+    // On non-YouTube pages with multiple iframes, only respond from frames that actually have a video
+    const hasVideo = Boolean(videoEl || findPrimaryVideo());
+    if (!isYouTubeHost && !hasVideo) {
+      return false;
+    }
+
     if (msg.type === 'GET_STATUS') {
       sendResponse({
+        siteName: state.siteName,
         videoId: state.videoId,
+        mediaKey: state.mediaKey,
         status: state.status,
         statusDetail: state.statusDetail,
         cueCount: state.cues.length,
@@ -1297,9 +1698,11 @@
     }
 
     if (msg.type === 'RELOAD_CAPTIONS') {
-      const vid = getCurrentVideoId();
-      if (vid) {
-        requestCaptionsForVideo(vid, true);
+      const found = findPrimaryVideo();
+      if (found) bindVideoElement(found);
+      const key = computeMediaKey(videoEl);
+      if (key) {
+        requestCaptionsForCurrentMedia(key, true);
         showToast('Memuat ulang subtitle...');
       }
       sendResponse({ ok: true });
@@ -1333,25 +1736,34 @@
   // =========================
 
   function checkPageState() {
+    const found = findPrimaryVideo();
+    if (found) {
+      bindVideoElement(found);
+    }
+
+    if (!isYouTubeHost && !videoEl) {
+      return;
+    }
+
     ensureOverlay();
     ensurePlayerButtons();
-    bindVideoElement();
 
-    const vid = getCurrentVideoId();
-    if (!vid) {
-      if (state.videoId) {
+    const key = computeMediaKey(videoEl);
+    if (!key) {
+      if (state.mediaKey) {
+        state.mediaKey = '';
         state.videoId = '';
         state.cues = [];
         stopDomFallback();
         ttsEngine.resetForVideo();
         applyAudioDucking();
-        setStatus('idle', 'Buka video YouTube untuk mulai menerjemahkan');
+        setStatus('idle', `Buka video di ${state.siteName} untuk mulai`);
       }
       return;
     }
 
-    if (vid !== state.videoId) {
-      requestCaptionsForVideo(vid, false);
+    if (key !== state.mediaKey) {
+      requestCaptionsForCurrentMedia(key, false);
     }
   }
 
@@ -1361,15 +1773,16 @@
 
     document.addEventListener('pointerdown', () => vocalRemover.resumeIfNeeded(), { passive: true });
     document.addEventListener('keydown', () => vocalRemover.resumeIfNeeded(), { passive: true });
+    document.addEventListener('fullscreenchange', () => setTimeout(ensureOverlay, 120));
 
-    window.addEventListener('yt-navigate-finish', () => {
-      setTimeout(checkPageState, 250);
-    });
-    window.addEventListener('yt-page-data-updated', () => {
-      setTimeout(checkPageState, 250);
-    });
+    if (isYouTubeHost) {
+      window.addEventListener('yt-navigate-finish', () => setTimeout(checkPageState, 250));
+      window.addEventListener('yt-page-data-updated', () => setTimeout(checkPageState, 250));
+    } else {
+      window.addEventListener('popstate', () => setTimeout(checkPageState, 300));
+    }
 
-    setInterval(checkPageState, 1200);
+    setInterval(checkPageState, isYouTubeHost ? 1200 : 1500);
   }
 
   init();

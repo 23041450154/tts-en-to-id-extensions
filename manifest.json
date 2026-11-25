@@ -1,19 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "YT IndoSub + TTS",
-  "version": "1.0.0",
-  "description": "Terjemahkan subtitle YouTube bahasa Inggris ke Indonesia secara otomatis lengkap dengan Text-to-Speech (dubbing) bahasa Indonesia.",
+  "name": "IndoSub + TTS (YouTube, Udemy & All Video)",
+  "version": "1.2.0",
+  "description": "Terjemahkan subtitle video Inggris ke Indonesia secara otomatis (YouTube, Udemy, Coursera, dll.) lengkap dengan Dubbing TTS Indonesia & Penghilang Vokal.",
   "permissions": [
     "storage",
     "activeTab"
   ],
   "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://clients5.google.com/*",
-    "https://translate.googleapis.com/*",
-    "https://translate.google.com/*",
-    "https://ottsy.weilbyte.dev/*",
-    "https://api.mymemory.translated.net/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,17 +17,20 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.youtube.com/*"
+        "https://*/*",
+        "http://*/*"
       ],
       "js": [
         "page-bridge.js"
       ],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": [
-        "https://www.youtube.com/*"
+        "https://*/*",
+        "http://*/*"
       ],
       "js": [
         "content.js"
@@ -39,12 +38,13 @@
       "css": [
         "content.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "YT IndoSub + TTS",
+    "default_title": "IndoSub + TTS",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

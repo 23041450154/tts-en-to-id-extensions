@@ -5,12 +5,16 @@
   const BRIDGE_SRC = 'YT_INDOSUB_BRIDGE';
   const CONTENT_SRC = 'YT_INDOSUB_CONTENT';
 
+  const isYouTubeHost = /(^|\.)youtube\.com$/i.test(location.hostname);
   const capturedByVideo = new Map();
+  let latestGenericSub = null;
+
   const origFetch = window.fetch;
   const origXhrOpen = XMLHttpRequest.prototype.open;
   const origXhrSend = XMLHttpRequest.prototype.send;
 
-  function getCurrentVideoId() {
+  function getCurrentYouTubeVideoId() {
+    if (!isYouTubeHost) return '';
     try {
       const url = new URL(location.href);
       if (url.pathname === '/watch') return url.searchParams.get('v') || '';
@@ -24,41 +28,91 @@
     return '';
   }
 
+  function guessLangFromUrl(rawUrl) {
+    try {
+      const u = new URL(rawUrl, location.origin);
+      const qLang = u.searchParams.get('lang') || u.searchParams.get('locale') || u.searchParams.get('language');
+      if (qLang) return qLang;
+      const pathMatch = u.pathname.match(/(?:^|[/_.-])(en(?:[-_][a-z]{2})?|id(?:[-_][a-z]{2})?)(?:[/_.-]|\.(?:vtt|srt|ttml|xml)$)/i);
+      if (pathMatch) return pathMatch[1];
+    } catch {
+      // ignore
+    }
+    return 'auto';
+  }
+
   function parseTimedTextMeta(rawUrl) {
     try {
       const u = new URL(rawUrl, location.origin);
-      if (!u.pathname.includes('/api/timedtext')) return null;
-      return {
-        url: u.toString(),
-        videoId: u.searchParams.get('v') || getCurrentVideoId(),
-        lang: u.searchParams.get('lang') || '',
-        tlang: u.searchParams.get('tlang') || '',
-        kind: u.searchParams.get('kind') || '',
-        fmt: u.searchParams.get('fmt') || ''
-      };
+      if (isYouTubeHost && u.pathname.includes('/api/timedtext')) {
+        return {
+          site: 'youtube',
+          url: u.toString(),
+          videoId: u.searchParams.get('v') || getCurrentYouTubeVideoId(),
+          lang: u.searchParams.get('lang') || '',
+          tlang: u.searchParams.get('tlang') || '',
+          kind: u.searchParams.get('kind') || '',
+          fmt: u.searchParams.get('fmt') || ''
+        };
+      }
+
+      if (!isYouTubeHost) {
+        const lower = (u.pathname + u.search).toLowerCase();
+        const looksLikeSub =
+          /\.(vtt|srt|ttml|dfxp)(\?|$|&)/i.test(lower) ||
+          /(\/vtt\/|\/subtitles?\/|\/captions?\/|timedtext|webvtt|vtt-c\.udemycdn\.com)/i.test(u.href);
+        if (looksLikeSub && !/\.(js|css|png|jpg|jpeg|webp|svg|woff2?|mp4|m4s|ts|m3u8|mpd)(\?|$)/i.test(u.pathname)) {
+          return {
+            site: 'generic',
+            url: u.toString(),
+            videoId: `${location.origin}${location.pathname}`,
+            lang: guessLangFromUrl(u.toString()),
+            tlang: '',
+            kind: '',
+            fmt: lower.includes('.srt') ? 'srt' : lower.includes('.ttml') || lower.includes('.xml') ? 'xml' : 'vtt'
+          };
+        }
+      }
     } catch {
-      return null;
+      // ignore
     }
+    return null;
+  }
+
+  function looksLikeSubtitleBody(body) {
+    const trimmed = (body || '').trim();
+    if (trimmed.length < 18) return false;
+    if (/^WEBVTT\b/i.test(trimmed)) return true;
+    if (/\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}/.test(trimmed)) return true;
+    if (trimmed.startsWith('{') && trimmed.includes('"events"')) return true;
+    if (trimmed.startsWith('<') && (trimmed.includes('<text') || trimmed.includes('<p ') || trimmed.includes('<tt'))) return true;
+    return false;
   }
 
   function emitCaptured(meta, body) {
-    if (!meta || !meta.videoId || !body || body.trim().length < 20) return;
+    if (!meta || !body || !looksLikeSubtitleBody(body)) return;
 
     const payload = {
-      videoId: meta.videoId,
-      lang: meta.lang || 'en',
+      site: meta.site || (isYouTubeHost ? 'youtube' : 'generic'),
+      videoId: meta.videoId || '',
+      lang: meta.lang || (isYouTubeHost ? 'en' : 'auto'),
       tlang: meta.tlang || '',
       kind: meta.kind || '',
       fmt: meta.fmt || '',
       url: meta.url,
+      pageUrl: location.href,
       body
     };
 
-    const existing = capturedByVideo.get(meta.videoId);
-    const isEnglish = payload.lang.toLowerCase().startsWith('en');
-    const existingIsEnglish = existing && existing.lang.toLowerCase().startsWith('en') && !existing.tlang;
-    if (!existing || (isEnglish && !payload.tlang) || (!existingIsEnglish && !payload.tlang)) {
-      capturedByVideo.set(meta.videoId, payload);
+    if (payload.site === 'youtube' && payload.videoId) {
+      const existing = capturedByVideo.get(payload.videoId);
+      const isEnglish = payload.lang.toLowerCase().startsWith('en');
+      const existingIsEnglish = existing && existing.lang.toLowerCase().startsWith('en') && !existing.tlang;
+      if (!existing || (isEnglish && !payload.tlang) || (!existingIsEnglish && !payload.tlang)) {
+        capturedByVideo.set(payload.videoId, payload);
+      }
+    } else {
+      latestGenericSub = payload;
     }
 
     window.postMessage(
@@ -71,7 +125,7 @@
     );
   }
 
-  // Intercept window.fetch for /api/timedtext
+  // Intercept window.fetch for YouTube /api/timedtext and generic VTT/SRT/TTML
   window.fetch = function (...args) {
     const reqUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url;
     const meta = reqUrl ? parseTimedTextMeta(reqUrl) : null;
@@ -88,32 +142,88 @@
             .catch(() => {});
         })
         .catch(() => {});
+    } else if (!isYouTubeHost && reqUrl && /^https?:\/\//i.test(reqUrl)) {
+      // Also detect subtitle responses served via text/vtt even without .vtt extension
+      promise
+        .then((response) => {
+          if (!response || !response.ok) return;
+          const ct = (response.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('text/vtt') || ct.includes('application/x-subrip') || ct.includes('ttml')) {
+            response
+              .clone()
+              .text()
+              .then((text) =>
+                emitCaptured(
+                  {
+                    site: 'generic',
+                    url: reqUrl,
+                    videoId: `${location.origin}${location.pathname}`,
+                    lang: guessLangFromUrl(reqUrl),
+                    tlang: '',
+                    kind: '',
+                    fmt: ct.includes('subrip') ? 'srt' : ct.includes('ttml') ? 'xml' : 'vtt'
+                  },
+                  text
+                )
+              )
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
 
     return promise;
   };
 
-  // Intercept XMLHttpRequest for /api/timedtext
+  // Intercept XMLHttpRequest
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this.__ytIndoSubMeta = typeof url === 'string' ? parseTimedTextMeta(url) : null;
+    this.__ytIndoSubUrl = typeof url === 'string' ? url : '';
     return origXhrOpen.call(this, method, url, ...rest);
   };
 
   XMLHttpRequest.prototype.send = function (...args) {
-    if (this.__ytIndoSubMeta) {
-      const meta = this.__ytIndoSubMeta;
+    const meta = this.__ytIndoSubMeta;
+    const rawUrl = this.__ytIndoSubUrl;
+
+    if (meta || (!isYouTubeHost && rawUrl)) {
       this.addEventListener('load', () => {
         try {
-          if (this.status >= 200 && this.status < 300 && typeof this.responseText === 'string') {
-            emitCaptured(meta, this.responseText);
+          if (this.status < 200 || this.status >= 300) return;
+          if (this.responseType && this.responseType !== 'text') return;
+          const text = this.responseText;
+          if (typeof text !== 'string' || text.length < 18) return;
+
+          if (meta) {
+            emitCaptured(meta, text);
+          } else {
+            const ct = (this.getResponseHeader('content-type') || '').toLowerCase();
+            if (ct.includes('text/vtt') || /^WEBVTT\b/i.test(text.trimStart())) {
+              emitCaptured(
+                {
+                  site: 'generic',
+                  url: rawUrl,
+                  videoId: `${location.origin}${location.pathname}`,
+                  lang: guessLangFromUrl(rawUrl),
+                  tlang: '',
+                  kind: '',
+                  fmt: 'vtt'
+                },
+                text
+              );
+            }
           }
         } catch {
-          // ignore non-text response types
+          // ignore non-text responses
         }
       });
     }
     return origXhrSend.apply(this, args);
   };
+
+  // =========================
+  // YouTube-specific helpers
+  // =========================
 
   function getPlayerResponse(videoId) {
     const player = document.querySelector('#movie_player');
@@ -154,31 +264,34 @@
       const candidates = [];
       for (let i = entries.length - 1; i >= 0; i--) {
         const name = entries[i]?.name || '';
-        if (!name.includes('/api/timedtext')) continue;
         const meta = parseTimedTextMeta(name);
-        if (meta && meta.videoId === videoId) {
+        if (!meta) continue;
+        if (isYouTubeHost) {
+          if (meta.site === 'youtube' && meta.videoId === videoId) {
+            candidates.push(meta);
+          }
+        } else {
           candidates.push(meta);
         }
       }
 
-      // Prefer English non-translated first, otherwise most recent matching videoId
       candidates.sort((a, b) => {
         const score = (m) =>
-          (m.lang.toLowerCase().startsWith('en') ? 4 : 0) + (!m.tlang ? 2 : 0) + (m.fmt === 'json3' ? 1 : 0);
+          (m.lang.toLowerCase().startsWith('en') ? 4 : 0) + (!m.tlang ? 2 : 0) + (m.fmt === 'json3' || m.fmt === 'vtt' ? 1 : 0);
         return score(b) - score(a);
       });
 
-      for (const meta of candidates) {
+      for (const meta of candidates.slice(0, 4)) {
         try {
-          const res = await origFetch.call(window, meta.url, { credentials: 'include' });
+          const res = await origFetch.call(window, meta.url, { credentials: isYouTubeHost ? 'include' : 'same-origin' });
           if (!res.ok) continue;
           const body = await res.text();
-          if (body && body.trim().length > 20) {
+          if (looksLikeSubtitleBody(body)) {
             emitCaptured(meta, body);
             return true;
           }
         } catch {
-          // try next candidate
+          // try next or let content.js fetch via background.js
         }
       }
     } catch {
@@ -195,10 +308,11 @@
       const res = await origFetch.call(window, u.toString(), { credentials: 'include' });
       if (!res.ok) return false;
       const body = await res.text();
-      if (!body || body.trim().length < 20) return false;
+      if (!looksLikeSubtitleBody(body)) return false;
 
       emitCaptured(
         {
+          site: 'youtube',
           url: u.toString(),
           videoId,
           lang: track.languageCode || 'en',
@@ -247,7 +361,6 @@
       if (pressed === 'false') {
         ccBtn.click();
       } else if (pressed === 'true') {
-        // CC was already ON before our request; wait briefly then toggle OFF -> ON to force fresh POT fetch
         setTimeout(async () => {
           if (capturedByVideo.has(videoId)) return;
           const fromPerf = await tryFetchFromPerformanceEntries(videoId);
@@ -269,7 +382,7 @@
     setTimeout(applyTrack, 220);
   }
 
-  async function handleRequestCaptions(videoId, forceReload = false) {
+  async function handleRequestYouTubeCaptions(videoId, forceReload = false) {
     if (!videoId) return;
 
     if (forceReload) {
@@ -286,7 +399,6 @@
       return;
     }
 
-    // Fast path: check if YouTube already requested timedtext with a valid POT token
     const perfOk = await tryFetchFromPerformanceEntries(videoId);
     if (perfOk) return;
 
@@ -331,10 +443,59 @@
     }
   }
 
+  async function handleRequestGenericCaptions(forceReload = false) {
+    if (!forceReload && latestGenericSub && latestGenericSub.pageUrl === location.href) {
+      window.postMessage(
+        {
+          source: BRIDGE_SRC,
+          type: 'TIMEDTEXT_CAPTURED',
+          payload: latestGenericSub
+        },
+        '*'
+      );
+      return;
+    }
+    if (forceReload) {
+      latestGenericSub = null;
+    }
+
+    // Collect any subtitle URLs already present in performance entries for content.js fallback fetch
+    const perfOk = await tryFetchFromPerformanceEntries('');
+    if (!perfOk) {
+      const urls = [];
+      try {
+        const entries = performance.getEntriesByType('resource') || [];
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const name = entries[i]?.name || '';
+          const meta = parseTimedTextMeta(name);
+          if (meta && meta.site === 'generic') {
+            urls.push({ url: meta.url, lang: meta.lang });
+          }
+        }
+      } catch {
+        // ignore
+      }
+      if (urls.length > 0) {
+        window.postMessage(
+          {
+            source: BRIDGE_SRC,
+            type: 'GENERIC_SUB_URLS',
+            urls: urls.slice(0, 5)
+          },
+          '*'
+        );
+      }
+    }
+  }
+
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data || event.data.source !== CONTENT_SRC) return;
     if (event.data.type === 'REQUEST_CAPTIONS') {
-      handleRequestCaptions(event.data.videoId, Boolean(event.data.forceReload));
+      if (isYouTubeHost) {
+        handleRequestYouTubeCaptions(event.data.videoId, Boolean(event.data.forceReload));
+      } else {
+        handleRequestGenericCaptions(Boolean(event.data.forceReload));
+      }
     }
   });
 })();

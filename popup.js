@@ -107,10 +107,10 @@ function setStatusUI(state, text, ttsInfo = null) {
   }
 }
 
-function queryActiveYouTubeTab(callback) {
+function queryActiveVideoTab(callback) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs && tabs[0];
-    if (!tab || !tab.id || !tab.url || !tab.url.startsWith('https://www.youtube.com/')) {
+    if (!tab || !tab.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
       callback(null);
       return;
     }
@@ -120,15 +120,15 @@ function queryActiveYouTubeTab(callback) {
 
 function refreshTabStatus() {
   if (Date.now() < statusHoldUntil) return;
-  queryActiveYouTubeTab((tab) => {
+  queryActiveVideoTab((tab) => {
     if (!tab) {
-      setStatusUI('idle', 'Buka video di youtube.com untuk mulai');
+      setStatusUI('idle', 'Buka video (YouTube, Udemy, dll.) untuk mulai');
       return;
     }
 
     chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, (resp) => {
       if (chrome.runtime.lastError || !resp) {
-        setStatusUI('loading', 'Refresh halaman YouTube setelah install/update');
+        setStatusUI('idle', 'Tidak ada video aktif di tab ini (atau refresh halaman)');
         return;
       }
 
@@ -236,14 +236,14 @@ els.fontSize.addEventListener('input', () => savePatch({ fontSize: parseInt(els.
 els.btnTestTts.addEventListener('click', runVoiceTest);
 
 els.btnReload.addEventListener('click', () => {
-  queryActiveYouTubeTab((tab) => {
+  queryActiveVideoTab((tab) => {
     if (!tab) {
-      setStatusUI('idle', 'Buka video YouTube terlebih dahulu');
+      setStatusUI('idle', 'Buka halaman video terlebih dahulu');
       return;
     }
     chrome.tabs.sendMessage(tab.id, { type: 'RELOAD_CAPTIONS' }, () => {
       if (chrome.runtime.lastError) {
-        setStatusUI('error', 'Refresh tab YouTube lalu coba lagi');
+        setStatusUI('error', 'Refresh tab video lalu coba lagi');
         return;
       }
       setStatusUI('loading', 'Memuat ulang subtitle...');

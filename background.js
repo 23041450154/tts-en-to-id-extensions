@@ -331,6 +331,27 @@ async function handleFetchTTS(text, voice = 'google:id', lang = 'id', options = 
   return audioDataUrls;
 }
 
+async function handleFetchSubtitleUrl(url) {
+  if (!url || !/^https?:\/\//i.test(url)) {
+    throw new Error('URL subtitle tidak valid');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Subtitle HTTP ${res.status}`);
+    }
+    const text = await res.text();
+    if (!text || text.trim().length < 10) {
+      throw new Error('Isi subtitle kosong');
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !message.type) return false;
 
@@ -347,6 +368,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       isTest: Boolean(message.isTest)
     })
       .then((audioUrls) => sendResponse({ ok: true, audioUrls }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === 'FETCH_SUBTITLE_URL') {
+    handleFetchSubtitleUrl(message.url || '')
+      .then((body) => sendResponse({ ok: true, body }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

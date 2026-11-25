@@ -1,9 +1,11 @@
-# YT IndoSub + TTS
+# IndoSub + TTS (YouTube, Udemy & All Video)
 
-Ekstensi browser (Chrome / Edge / Brave — Manifest V3) untuk menerjemahkan subtitle video YouTube dari bahasa Inggris ke bahasa Indonesia secara otomatis, lengkap dengan **Text-to-Speech (Dubbing Bahasa Indonesia)** dan **Auto Deteksi Kecepatan TTS**.
+Ekstensi browser (Chrome / Edge / Brave — Manifest V3) untuk menerjemahkan subtitle video berbahasa Inggris ke bahasa Indonesia secara otomatis di **YouTube, Udemy, Coursera, edX, Vimeo, dan situs video HTML5 lainnya**, lengkap dengan **Text-to-Speech (Dubbing Bahasa Indonesia)**, **Auto Deteksi Kecepatan TTS**, dan **Penghilang Vokal Asli**.
 
 ## Fitur Utama
 
+- **Multi-Platform Video**: mendukung YouTube (`timedtext`), Udemy, Coursera, edX, Vimeo, Pluralsight, Skillshare, Netflix, serta pemutar HTML5 `<video>` (WebVTT `.vtt`, `.srt`, TTML, dan `TextTrack`).
+- **Filter Tag Non-Dialog Otomatis**: membersihkan tag seperti `[Music]`, `[musik]`, `[Applause]`, `(laughter)`, `>>`, dan `♪` agar tidak ikut dibacakan oleh suara TTS.
 - **Dual Subtitle (Inggris + Indonesia)** atau hanya Indonesia, diterjemahkan secara progresif mulai dari detik video saat ini.
 - **Text-to-Speech (Dubbing Bahasa Indonesia)** gratis tanpa API key dengan beberapa pilihan suara:
   - **Google — Wanita** (cepat & stabil)

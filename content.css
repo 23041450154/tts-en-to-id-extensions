@@ -1,8 +1,22 @@
-/* YT IndoSub + TTS Overlay & Player Controls */
+/* IndoSub + TTS Universal Overlay & Player Controls (YouTube, Udemy, Coursera & HTML5 Video) */
 
-#movie_player.yt-indosub-hide-native .ytp-caption-window-container {
+.yt-indosub-hide-native .ytp-caption-window-container,
+.yt-indosub-hide-native [data-purpose="captions-cue-text"],
+.yt-indosub-hide-native [class*="captions-display--captions-container"],
+.yt-indosub-hide-native .vjs-text-track-display,
+.yt-indosub-hide-native .plyr__captions,
+.yt-indosub-hide-native .jw-captions,
+.yt-indosub-hide-native .player-timedtext,
+.yt-indosub-hide-native .shaka-text-container {
   opacity: 0 !important;
   pointer-events: none !important;
+}
+
+.yt-indosub-hide-native video::cue {
+  opacity: 0 !important;
+  color: transparent !important;
+  background: transparent !important;
+  text-shadow: none !important;
 }
 
 #yt-indosub-overlay {
@@ -10,8 +24,8 @@
   left: 50%;
   bottom: 64px;
   transform: translateX(-50%);
-  z-index: 65;
-  max-width: 84%;
+  z-index: 2147483640;
+  max-width: 86%;
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -19,7 +33,7 @@
   gap: 4px;
   text-align: center;
   transition: bottom 0.18s ease, opacity 0.15s ease;
-  font-family: "YouTube Noto", Roboto, Arial, Helvetica, sans-serif;
+  font-family: "YouTube Noto", Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
 }
 
 #movie_player.ytp-autohide #yt-indosub-overlay {
@@ -35,7 +49,7 @@
   display: inline-block;
   padding: 5px 12px;
   border-radius: 6px;
-  background: rgba(12, 14, 18, 0.82);
+  background: rgba(12, 14, 18, 0.84);
   backdrop-filter: blur(4px);
   line-height: 1.35;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
@@ -63,10 +77,10 @@
   position: absolute;
   top: 16px;
   right: 16px;
-  z-index: 70;
+  z-index: 2147483642;
   padding: 7px 12px;
   border-radius: 8px;
-  background: rgba(15, 18, 24, 0.9);
+  background: rgba(15, 18, 24, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.14);
   color: #f8fafc;
   font-family: Roboto, Arial, sans-serif;
@@ -110,25 +124,57 @@
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.03em;
-  color: rgba(255, 255, 255, 0.65);
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(15, 18, 24, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.yt-indosub-player-btn:hover .yt-indosub-pill {
+.yt-indosub-player-btn:hover .yt-indosub-pill,
+.yt-indosub-float-btn:hover .yt-indosub-pill {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.25);
 }
 
-.yt-indosub-player-btn.active-sub .yt-indosub-pill {
+.yt-indosub-player-btn.active-sub .yt-indosub-pill,
+.yt-indosub-float-btn.active-sub .yt-indosub-pill {
   background: #e11d2e;
   color: #ffffff;
   border-color: #fb7185;
 }
 
-.yt-indosub-player-btn.active-tts .yt-indosub-pill {
+.yt-indosub-player-btn.active-tts .yt-indosub-pill,
+.yt-indosub-float-btn.active-tts .yt-indosub-pill {
   background: #10b981;
   color: #052e16;
   border-color: #6ee7b7;
+}
+
+/* Subtle floating quick buttons for non-YouTube players (Udemy, Coursera, etc.) */
+#yt-indosub-floating-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2147483641;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  opacity: 0.35;
+  transition: opacity 0.2s ease;
+  pointer-events: auto;
+}
+
+#yt-indosub-floating-controls:hover {
+  opacity: 1;
+}
+
+.yt-indosub-float-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
 }
