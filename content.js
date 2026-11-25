@@ -364,13 +364,12 @@
 
   class IndonesianTTSEngine {
     constructor() {
-      this.audioEl = new Audio();
-      this.audioEl.preload = 'auto';
-      this.enablePitchPreservation(this.audioEl);
+      this.audioEl = null;
       this.prefetchCache = new Map();
       this.inflightFetches = new Map();
       this.playToken = 0;
       this.lastSpokenKey = '';
+      this.pendingGraceKey = '';
       this.autoplayNoticeShown = false;
 
       // Adaptive speed detection state
@@ -392,7 +391,7 @@
     }
 
     getRemainingAudioSec() {
-      if (!this.isPlayingAudio || this.audioEl.paused) return 0;
+      if (!this.isPlayingAudio || !this.audioEl || this.audioEl.paused) return 0;
       const dur = this.audioEl.duration;
       if (!dur || !Number.isFinite(dur)) return 0;
       const rate = this.audioEl.playbackRate || 1;
@@ -461,14 +460,20 @@
     stop() {
       clearTimeout(this.graceTimer);
       this.graceTimer = null;
+      this.pendingGraceKey = '';
       this.playToken++;
       this.isPlayingAudio = false;
-      try {
-        this.audioEl.pause();
-        this.audioEl.removeAttribute('src');
-        this.audioEl.load();
-      } catch {
-        // ignore
+      if (this.audioEl) {
+        try {
+          // Detach listeners BEFORE pausing so abort events never leak into the next playback
+          this.audioEl.onended = null;
+          this.audioEl.onerror = null;
+          this.audioEl.onloadedmetadata = null;
+          this.audioEl.pause();
+        } catch {
+          // ignore
+        }
+        this.audioEl = null;
       }
       try {
         if ('speechSynthesis' in window) {
@@ -483,6 +488,7 @@
     resetForVideo() {
       this.stop();
       this.lastSpokenKey = '';
+      this.pendingGraceKey = '';
       this.paceEma = Math.max(0.9, Math.min(1.6, Number(settings.ttsRate) || 1.1));
       this.lastAppliedRate = this.paceEma;
       this.lastPaceLabel = 'Normal';
@@ -494,7 +500,7 @@
       return (settings.ttsVoice || 'google:id').startsWith('browser:');
     }
 
-    fetchOnlineAudio(text) {
+    fetchOnlineAudio(text, isPrefetch = false) {
       const clean = (text || '').trim();
       if (!clean) return Promise.resolve([]);
       const voice = settings.ttsVoice || 'google:id';
@@ -504,19 +510,25 @@
         return Promise.resolve(this.prefetchCache.get(cacheKey));
       }
       if (this.inflightFetches.has(cacheKey)) {
-        return this.inflightFetches.get(cacheKey);
+        const shared = this.inflightFetches.get(cacheKey);
+        if (isPrefetch) return shared;
+        // For active cue: don't wait longer than 2.2s on a slow prefetch; let caller fall back immediately
+        return Promise.race([
+          shared,
+          new Promise((resolve) => setTimeout(() => resolve([]), 2200))
+        ]);
       }
 
       const promise = new Promise((resolve) => {
         chrome.runtime.sendMessage(
-          { type: 'FETCH_TTS_AUDIO', text: clean, voice, lang: 'id' },
+          { type: 'FETCH_TTS_AUDIO', text: clean, voice, lang: 'id', isPrefetch },
           (resp) => {
             this.inflightFetches.delete(cacheKey);
-            if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls)) {
+            if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls) || resp.audioUrls.length === 0) {
               resolve([]);
               return;
             }
-            if (this.prefetchCache.size > 80) {
+            if (this.prefetchCache.size > 120) {
               const oldest = this.prefetchCache.keys().next().value;
               this.prefetchCache.delete(oldest);
             }
@@ -532,10 +544,13 @@
 
     prefetchAhead(currentIdx) {
       if (this.isBrowserVoice() || !settings.ttsEnabled) return;
-      for (let offset = 1; offset <= 3; offset++) {
+      const voice = settings.ttsVoice || 'google:id';
+      // TikTok voices have ~3s network latency, so warm 7 cues (~20s) ahead to guarantee 0ms playback!
+      const lookahead = voice.startsWith('tiktok:') ? 7 : 4;
+      for (let offset = 1; offset <= lookahead; offset++) {
         const nextCue = state.cues[currentIdx + offset];
         if (nextCue && nextCue.idText) {
-          this.fetchOnlineAudio(nextCue.idText);
+          this.fetchOnlineAudio(nextCue.idText, true);
         }
       }
     }
@@ -548,14 +563,17 @@
     async speak(text, cueKey, windowEndVideoSec = null, fallbackWallSec = 3.5) {
       const clean = (text || '').trim();
       if (!clean) return;
-      if (this.lastSpokenKey === cueKey) return;
+      if (this.lastSpokenKey === cueKey || this.pendingGraceKey === cueKey) return;
 
       // Gentle anti-cutoff grace: if previous line has <= 0.35s left, let its last syllable finish
       const prevLeft = this.getRemainingAudioSec();
       if (settings.autoTtsSpeed && prevLeft > 0.04 && prevLeft <= 0.35 && !this.isBrowserVoice()) {
         clearTimeout(this.graceTimer);
+        this.pendingGraceKey = cueKey;
         this.graceTimer = setTimeout(() => {
           this.graceTimer = null;
+          if (this.pendingGraceKey !== cueKey) return;
+          this.pendingGraceKey = '';
           if (!settings.enabled || !settings.ttsEnabled || (videoEl && videoEl.paused)) return;
           this.startSpeakingNow(clean, cueKey, windowEndVideoSec, fallbackWallSec);
         }, Math.round(prevLeft * 1000) + 15);
@@ -587,9 +605,27 @@
         return;
       }
 
-      const audioUrls = await this.fetchOnlineAudio(clean);
+      let audioUrls = await this.fetchOnlineAudio(clean, false);
       if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
       if (videoEl && videoEl.paused) return;
+
+      // If shared prefetch promise failed/timed out, retry immediately with fast Google TTS fallback
+      if (!audioUrls || audioUrls.length === 0) {
+        audioUrls = await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { type: 'FETCH_TTS_AUDIO', text: clean, voice: 'google:id', lang: 'id', isPrefetch: false },
+            (resp) => {
+              if (chrome.runtime.lastError || !resp || !resp.ok || !Array.isArray(resp.audioUrls)) {
+                resolve([]);
+              } else {
+                resolve(resp.audioUrls);
+              }
+            }
+          );
+        });
+        if (token !== this.playToken || !settings.enabled || !settings.ttsEnabled) return;
+        if (videoEl && videoEl.paused) return;
+      }
 
       if (!audioUrls || audioUrls.length === 0) {
         const remSec = this.getRemainingWallSec(windowEndVideoSec, fallbackWallSec);
@@ -622,8 +658,11 @@
 
     playAudioUrl(dataUrl, token, chunkTargetSec, chunkChars) {
       return new Promise((resolve) => {
-        const audio = this.audioEl;
+        // Fresh Audio instance per chunk prevents stale abort/error events from previous clips
+        const audio = new Audio();
+        audio.preload = 'auto';
         this.enablePitchPreservation(audio);
+        this.audioEl = audio;
 
         let settled = false;
         const finish = (ok) => {
