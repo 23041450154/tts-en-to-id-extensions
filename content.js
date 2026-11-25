@@ -678,10 +678,11 @@
     }
 
     isCorsSafe(video) {
-      if (!video) return false;
-      const src = video.currentSrc || video.src || '';
-      if (!src || src.startsWith('blob:') || src.startsWith('data:')) return true;
-      if (video.crossOrigin) return true;
+      // Wait until currentSrc is resolved (readyState >= 2) so we never attach to an unresolved cross-origin <source>
+      if (!video || video.readyState < 2) return false;
+      const src = video.currentSrc || '';
+      if (!src) return false;
+      if (src.startsWith('blob:') || src.startsWith('data:')) return true;
       try {
         return new URL(src, location.href).origin === location.origin;
       } catch {
@@ -705,7 +706,8 @@
       }
 
       if (!this.isCorsSafe(video)) {
-        if (!this.corsWarned) {
+        // Only warn once metadata/currentSrc is loaded and confirmed cross-origin
+        if (video.readyState >= 2 && video.currentSrc && !this.corsWarned) {
           this.corsWarned = true;
           showToast('Penghilang vokal tidak didukung oleh CORS video di situs ini', 3200);
         }
@@ -1853,9 +1855,19 @@
   function cleanupInvalidatedContext() {
     if (checkIntervalId) clearInterval(checkIntervalId);
     ttsEngine.stop();
+    if (videoEl) {
+      vocalRemover.setEnabled(videoEl, false);
+      if (isDucking || (videoEl.volume < 0.05 && !videoEl.muted)) {
+        isDucking = false;
+        videoEl.volume = savedVideoVolume !== null && savedVideoVolume > 0.05 ? savedVideoVolume : 1.0;
+        savedVideoVolume = null;
+      }
+    }
     if (overlayEl) overlayEl.remove();
     if (toastEl) toastEl.remove();
     if (floatingBarEl) floatingBarEl.remove();
+    if (subBtnEl) subBtnEl.remove();
+    if (ttsBtnEl) ttsBtnEl.remove();
     if (playerContainerEl) playerContainerEl.classList.remove('yt-indosub-hide-native');
   }
 
