@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-  <div class="app">
+  <div id="appRoot" class="app">
     <header class="header">
       <div class="brand">
         <div class="brand-badge">ID</div>
@@ -16,7 +16,13 @@
           <p class="subtitle">YouTube, Udemy, Coursera &amp; Video Web</p>
         </div>
       </div>
-      <span id="statusDot" class="status-dot idle" title="Status"></span>
+      <div class="header-right">
+        <button type="button" id="btnMasterToggle" class="power-btn on" title="Aktifkan atau nonaktifkan seluruh ekstensi">
+          <span class="power-dot"></span>
+          <span id="masterToggleText">Aktif</span>
+        </button>
+        <span id="statusDot" class="status-dot idle" title="Status"></span>
+      </div>
     </header>
 
     <div id="statusBar" class="status-bar">

@@ -1,4 +1,5 @@
 const DEFAULT_SETTINGS = {
+  masterEnabled: true,
   enabled: true,
   showOriginal: true,
   ttsEnabled: true,
@@ -12,6 +13,9 @@ const DEFAULT_SETTINGS = {
 };
 
 const els = {
+  appRoot: document.getElementById('appRoot'),
+  btnMasterToggle: document.getElementById('btnMasterToggle'),
+  masterToggleText: document.getElementById('masterToggleText'),
   enabled: document.getElementById('enabled'),
   showOriginal: document.getElementById('showOriginal'),
   ttsEnabled: document.getElementById('ttsEnabled'),
@@ -64,6 +68,12 @@ function populateBrowserVoices() {
 }
 
 function renderSettings(s) {
+  const isMasterOn = s.masterEnabled !== false;
+  els.appRoot.classList.toggle('is-off', !isMasterOn);
+  els.btnMasterToggle.classList.toggle('on', isMasterOn);
+  els.btnMasterToggle.classList.toggle('off', !isMasterOn);
+  els.masterToggleText.textContent = isMasterOn ? 'Aktif' : 'Nonaktif';
+
   els.enabled.checked = Boolean(s.enabled);
   els.showOriginal.checked = Boolean(s.showOriginal);
   els.ttsEnabled.checked = Boolean(s.ttsEnabled);
@@ -120,6 +130,10 @@ function queryActiveVideoTab(callback) {
 
 function refreshTabStatus() {
   if (Date.now() < statusHoldUntil) return;
+  if (currentSettings.masterEnabled === false) {
+    setStatusUI('idle', 'Ekstensi sedang dinonaktifkan');
+    return;
+  }
   queryActiveVideoTab((tab) => {
     if (!tab) {
       setStatusUI('idle', 'Buka video (YouTube, Udemy, dll.) untuk mulai');
@@ -221,6 +235,17 @@ async function runVoiceTest() {
 }
 
 // Bind controls
+els.btnMasterToggle.addEventListener('click', () => {
+  const next = currentSettings.masterEnabled === false;
+  savePatch({ masterEnabled: next });
+  if (!next) {
+    setStatusUI('idle', 'Ekstensi sedang dinonaktifkan');
+  } else {
+    setStatusUI('loading', 'Mengaktifkan ekstensi...');
+    setTimeout(refreshTabStatus, 400);
+  }
+});
+
 els.enabled.addEventListener('change', () => savePatch({ enabled: els.enabled.checked }));
 els.showOriginal.addEventListener('change', () => savePatch({ showOriginal: els.showOriginal.checked }));
 els.ttsEnabled.addEventListener('change', () => savePatch({ ttsEnabled: els.ttsEnabled.checked }));

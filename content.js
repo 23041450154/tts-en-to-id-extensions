@@ -7,6 +7,7 @@
   const isYouTubeHost = /(^|\.)youtube\.com$/i.test(location.hostname);
 
   const DEFAULT_SETTINGS = {
+    masterEnabled: true,
     enabled: true,
     showOriginal: true,
     ttsEnabled: true,
@@ -847,10 +848,11 @@
   function applyAudioDucking() {
     if (!videoEl) return;
 
-    const wantVocalRemover = Boolean(settings.vocalRemoveEnabled);
+    const isMasterOn = settings.masterEnabled !== false;
+    const wantVocalRemover = Boolean(isMasterOn && settings.vocalRemoveEnabled);
     const vocalActive = vocalRemover.setEnabled(videoEl, wantVocalRemover);
 
-    const shouldDuck = Boolean(settings.ttsEnabled && !videoEl.paused && !vocalActive);
+    const shouldDuck = Boolean(isMasterOn && settings.ttsEnabled && !videoEl.paused && !vocalActive);
 
     if (shouldDuck) {
       if (!isDucking) {
@@ -1065,7 +1067,7 @@
           this.graceTimer = null;
           if (this.pendingGraceKey !== cueKey) return;
           this.pendingGraceKey = '';
-          if (!settings.ttsEnabled || (videoEl && videoEl.paused)) return;
+          if (settings.masterEnabled === false || !settings.ttsEnabled || (videoEl && videoEl.paused)) return;
           this.startSpeakingNow(clean, cueKey, windowEndVideoSec, fallbackWallSec);
         }, Math.round(prevLeft * 1000) + 15);
         return;
@@ -1097,7 +1099,7 @@
       }
 
       let audioUrls = await this.fetchOnlineAudio(clean, false);
-      if (token !== this.playToken || !settings.ttsEnabled) return;
+      if (token !== this.playToken || settings.masterEnabled === false || !settings.ttsEnabled) return;
       if (videoEl && videoEl.paused) return;
 
       if (!audioUrls || audioUrls.length === 0) {
@@ -1113,7 +1115,7 @@
             }
           );
         });
-        if (token !== this.playToken || !settings.ttsEnabled) return;
+        if (token !== this.playToken || settings.masterEnabled === false || !settings.ttsEnabled) return;
         if (videoEl && videoEl.paused) return;
       }
 
@@ -1274,22 +1276,30 @@
   function makeToggleHandlers() {
     const onSubClick = (e) => {
       e.stopPropagation();
-      const next = !settings.enabled;
-      saveSettingsPatch({ enabled: next });
+      const next = settings.masterEnabled === false ? true : !settings.enabled;
+      saveSettingsPatch({ masterEnabled: true, enabled: next });
       showToast(next ? 'Subtitle Indonesia: AKTIF' : 'Subtitle Indonesia: NONAKTIF');
-      updateActiveCue(true);
+      if (state.cues.length === 0 && state.mediaKey) {
+        requestCaptionsForCurrentMedia(state.mediaKey, false);
+      } else {
+        updateActiveCue(true);
+      }
     };
 
     const onTtsClick = (e) => {
       e.stopPropagation();
-      const next = !settings.ttsEnabled;
-      saveSettingsPatch({ ttsEnabled: next });
+      const next = settings.masterEnabled === false ? true : !settings.ttsEnabled;
+      saveSettingsPatch({ masterEnabled: true, ttsEnabled: next });
       showToast(next ? 'Dubbing Suara Indonesia: AKTIF' : 'Dubbing Suara Indonesia: NONAKTIF');
       if (!next) {
         ttsEngine.stop();
       } else {
         ttsEngine.lastSpokenKey = '';
-        updateActiveCue(true);
+        if (state.cues.length === 0 && state.mediaKey) {
+          requestCaptionsForCurrentMedia(state.mediaKey, false);
+        } else {
+          updateActiveCue(true);
+        }
       }
       applyAudioDucking();
     };
@@ -1352,11 +1362,12 @@
   }
 
   function updatePlayerButtonStates() {
+    const isMasterOn = settings.masterEnabled !== false;
     if (subBtnEl) {
-      subBtnEl.classList.toggle('active-sub', Boolean(settings.enabled));
+      subBtnEl.classList.toggle('active-sub', Boolean(isMasterOn && settings.enabled));
     }
     if (ttsBtnEl) {
-      const active = Boolean(settings.ttsEnabled);
+      const active = Boolean(isMasterOn && settings.ttsEnabled);
       ttsBtnEl.classList.toggle('active-tts', active);
       if (active && settings.autoTtsSpeed) {
         const info = ttsEngine.getStatusSummary();
@@ -1368,14 +1379,15 @@
   }
 
   function applySettingsUI() {
+    const isMasterOn = settings.masterEnabled !== false;
     if (playerContainerEl) {
-      const hideNative = Boolean(settings.enabled && (state.cues.length > 0 || state.domFallbackActive));
+      const hideNative = Boolean(isMasterOn && settings.enabled && (state.cues.length > 0 || state.domFallbackActive));
       playerContainerEl.classList.toggle('yt-indosub-hide-native', hideNative);
     }
 
     if (overlayEl) {
       overlayEl.style.fontSize = `${Math.max(14, Math.min(36, Number(settings.fontSize) || 22))}px`;
-      if (!settings.enabled) {
+      if (!isMasterOn || !settings.enabled) {
         overlayEl.classList.add('yt-indosub-hidden');
       }
     }
@@ -1416,6 +1428,11 @@
 
   function updateActiveCue(force = false) {
     if (!videoEl) return;
+
+    if (settings.masterEnabled === false) {
+      if (overlayEl) overlayEl.classList.add('yt-indosub-hidden');
+      return;
+    }
 
     if (!settings.enabled && overlayEl) {
       overlayEl.classList.add('yt-indosub-hidden');
@@ -1537,7 +1554,7 @@
 
     let debounceTimer = null;
     state.domFallbackObserver = new MutationObserver(() => {
-      if (token !== state.runToken || state.cues.length > 0 || (!settings.enabled && !settings.ttsEnabled)) return;
+      if (settings.masterEnabled === false || token !== state.runToken || state.cues.length > 0 || (!settings.enabled && !settings.ttsEnabled)) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
         let rawText = '';
@@ -1586,6 +1603,14 @@
 
   async function requestCaptionsForCurrentMedia(mediaKey, forceReload = false) {
     if (!mediaKey) return;
+
+    if (settings.masterEnabled === false) {
+      state.mediaKey = mediaKey;
+      state.videoId = isYouTubeHost ? getCurrentYouTubeVideoId() : '';
+      setStatus('idle', 'Ekstensi sedang nonaktif');
+      applySettingsUI();
+      return;
+    }
 
     state.runToken++;
     const token = state.runToken;
@@ -1663,6 +1688,7 @@
     }
 
     if (type === 'TIMEDTEXT_CAPTURED' && payload) {
+      if (settings.masterEnabled === false) return;
       if (isYouTubeHost) {
         const currentId = getCurrentYouTubeVideoId();
         if (!currentId || payload.videoId !== currentId) return;
@@ -1737,12 +1763,32 @@
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync') return;
+    const prevMaster = settings.masterEnabled !== false;
     const prevTts = settings.ttsEnabled;
     const prevVoice = settings.ttsVoice;
     for (const [key, change] of Object.entries(changes)) {
       settings[key] = change.newValue;
     }
+    const isMasterOn = settings.masterEnabled !== false;
     applySettingsUI();
+    if (!isMasterOn) {
+      ttsEngine.stop();
+      setStatus('idle', 'Ekstensi sedang nonaktif');
+      showToast('IndoSub + TTS: NONAKTIF');
+      return;
+    }
+    if (!prevMaster && isMasterOn) {
+      showToast('IndoSub + TTS: AKTIF');
+      ttsEngine.lastSpokenKey = '';
+      if (state.cues.length === 0) {
+        const key = computeMediaKey(videoEl);
+        if (key) requestCaptionsForCurrentMedia(key, false);
+      } else {
+        setStatus('ready', `${state.translatedCount}/${state.cues.length} baris diterjemahkan`);
+        updateActiveCue(true);
+      }
+      return;
+    }
     if (!settings.ttsEnabled) {
       ttsEngine.stop();
     } else if ((!prevTts && settings.ttsEnabled) || prevVoice !== settings.ttsVoice) {

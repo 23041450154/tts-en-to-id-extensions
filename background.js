@@ -352,6 +352,27 @@ async function handleFetchSubtitleUrl(url) {
   }
 }
 
+function updateActionBadge(masterEnabled) {
+  if (!chrome.action || !chrome.action.setBadgeText) return;
+  if (masterEnabled === false) {
+    chrome.action.setBadgeText({ text: 'OFF' });
+    chrome.action.setBadgeBackgroundColor({ color: '#64748b' });
+  } else {
+    chrome.action.setBadgeText({ text: '' });
+  }
+}
+
+if (chrome.storage && chrome.storage.sync) {
+  chrome.storage.sync.get({ masterEnabled: true }, (stored) => {
+    updateActionBadge(stored?.masterEnabled !== false);
+  });
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'sync' && changes.masterEnabled) {
+      updateActionBadge(changes.masterEnabled.newValue !== false);
+    }
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !message.type) return false;
 
