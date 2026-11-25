@@ -25,6 +25,7 @@
     siteName: isYouTubeHost ? 'YouTube' : location.hostname.replace(/^www\./, ''),
     mediaKey: '',
     videoId: '', // YouTube videoId when on YouTube
+    lastCapturedSubUrl: '',
     sourceLang: 'en',
     cues: [], // { id, start, end, en, idText, translating }
     activeCueIndex: -1,
@@ -169,6 +170,17 @@
 
     if (document.fullscreenElement && document.fullscreenElement.contains(video)) {
       return document.fullscreenElement;
+    }
+
+    // Prefer well-known outer player containers (Udemy, Video.js, Coursera, Plyr, JWPlayer, Shaka)
+    const knownPlayer = video.closest(
+      '[data-purpose="video-player"], [class*="video-player--container"], [class*="video-player--video-wrapper"], .video-js, .plyr, .jwplayer, .shaka-video-container'
+    );
+    if (knownPlayer) {
+      if (getComputedStyle(knownPlayer).position === 'static') {
+        knownPlayer.style.position = 'relative';
+      }
+      return knownPlayer;
     }
 
     const vRect = video.getBoundingClientRect();
@@ -1572,6 +1584,7 @@
     const token = state.runToken;
     state.mediaKey = mediaKey;
     state.videoId = isYouTubeHost ? getCurrentYouTubeVideoId() : '';
+    if (forceReload) state.lastCapturedSubUrl = '';
     state.cues = [];
     state.activeCueIndex = -1;
     state.translatedCount = 0;
@@ -1658,8 +1671,16 @@
           if (found) bindVideoElement(found);
         }
         if (!videoEl) return;
+        // Ignore duplicate delivery of the exact same VTT URL if cues are already loaded
+        if (payload.url && payload.url === state.lastCapturedSubUrl && state.cues.length > 0) return;
+
         const parsed = parseTimedText(payload.body);
         if (parsed.length === 0) return;
+
+        state.runToken++;
+        state.lastCapturedSubUrl = payload.url || '';
+        state.mediaKey = computeMediaKey(videoEl);
+        ttsEngine.resetForVideo();
         ensureOverlay();
         ensurePlayerButtons();
         loadCuesIntoState(parsed, payload.lang || 'auto', false);
@@ -1729,7 +1750,24 @@
   // Navigation & Init Loop
   // =========================
 
+  let checkIntervalId = null;
+
+  function cleanupInvalidatedContext() {
+    if (checkIntervalId) clearInterval(checkIntervalId);
+    ttsEngine.stop();
+    if (overlayEl) overlayEl.remove();
+    if (toastEl) toastEl.remove();
+    if (floatingBarEl) floatingBarEl.remove();
+    if (playerContainerEl) playerContainerEl.classList.remove('yt-indosub-hide-native');
+  }
+
   function checkPageState() {
+    // If user reloaded the extension without refreshing this tab, clean up stale UI cleanly
+    if (!chrome.runtime || !chrome.runtime.id) {
+      cleanupInvalidatedContext();
+      return;
+    }
+
     const found = findPrimaryVideo();
     if (found) {
       bindVideoElement(found);
@@ -1776,7 +1814,7 @@
       window.addEventListener('popstate', () => setTimeout(checkPageState, 300));
     }
 
-    setInterval(checkPageState, isYouTubeHost ? 1200 : 1500);
+    checkIntervalId = setInterval(checkPageState, isYouTubeHost ? 1200 : 1500);
   }
 
   init();

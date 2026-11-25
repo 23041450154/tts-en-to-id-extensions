@@ -128,7 +128,7 @@ function refreshTabStatus() {
 
     chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, (resp) => {
       if (chrome.runtime.lastError || !resp) {
-        setStatusUI('idle', 'Tidak ada video aktif di tab ini (atau refresh halaman)');
+        setStatusUI('loading', 'Refresh halaman ini (F5 / Ctrl+R) agar ekstensi terhubung');
         return;
       }
 
